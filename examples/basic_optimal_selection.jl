@@ -39,24 +39,26 @@ gnep = DyNECT.StaticGNEP(Q, q, A_loc, b_loc, A_sh, b_sh)
 # restrict parameter space for reparametrization
 θub = [5.0; 5.0]
 θlb = [-5.0; -5.0]
-mpavi = DyNECT.NabetaniParametrization(gnep, θub=θub, θlb=θlb)
-
-sol = CommonSolve.solve(gnep, DyNECT.NabetaniParametrizationSolver, θub = θub, θlb = θlb)
+solver = CommonSolve.init(gnep, DyNECT.NabetaniParametrizationSolver; θub=θub, θlb=θlb)
+sol = CommonSolve.solve!(solver)
+regions = DyNECT.gne_regions(sol, gnep, solver.mpavi)   # equal-slack sets E_r (Theorem 1), no filtering
 
 # ============================================================================
 # Check solution of GNE problem
 # ============================================================================
 
 # Solution expected: x₂ = min(1 - x₁, 2 - 4x₁) for x₁ ∈ [0, .5]
+# E_r can be lower dimensional: grid points are projected onto {Eθ = e} before the membership test
 x_sol = Vector{Vector{Float64}}()
 
-n_grid = 1000
+n_grid = 300
 θ1_grid = range(θlb[1], θub[1]; length=n_grid)
 θ2_grid = range(θlb[2], θub[2]; length=n_grid)
 
-for θ1 in θ1_grid, θ2 in θ2_grid
+for θ1 in θ1_grid, θ2 in θ2_grid, R in regions
     θ = [θ1, θ2]
-    x = DyNECT.evaluatePWA(sol, θ)
+    isempty(R.e) || (θ -= pinv(R.E) * (R.E * θ - R.e))
+    x = DyNECT.evaluate_gne([R], θ)
     if !isnothing(x)
         push!(x_sol, collect(x))
     end
@@ -65,7 +67,7 @@ end
 if !isempty(x_sol)
     x1 = [x[1] for x in x_sol]
     x2 = [x[2] for x in x_sol]
-    plt = scatter(x1, x2; xlabel="x₁", ylabel="x₂", title="x_sol over θ grid ($(n_grid)×$(n_grid))", label="")
+    plt = scatter(x1, x2; xlabel="x₁", ylabel="x₂", title="GNEs from ∪E_r over θ grid ($(n_grid)×$(n_grid))", label="")
     display(plt)
     savefig(plt, "examples/basic_optimal_selection_GNE_sol.png")
 end
@@ -77,7 +79,7 @@ for x in x_sol
     global all_solutions_found
     x2_sol = min(1 - x[1], 2 - 4 * x[1])
     all_solutions_found = all_solutions_found & (norm(x[2] - x2_sol) < tol)
-    all_solutions_found = all_solutions_found & (0.0 <= x[1] <= 0.5)
+    all_solutions_found = all_solutions_found & (-tol <= x[1] <= 0.5 + tol)
 end
 
 if all_solutions_found

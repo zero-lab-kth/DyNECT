@@ -181,20 +181,20 @@ end
     
     θub = [5.0]
     θlb = [-5.0]
-    sol = CommonSolve.solve(gnep, DyNECT.NabetaniParametrizationSolver; θub = θub, θlb = θlb, verbose = 0)
+    solver = CommonSolve.init(gnep, DyNECT.NabetaniParametrizationSolver; θub = θub, θlb = θlb, verbose = 0)
+    sol = CommonSolve.solve!(solver)
+    regions = DyNECT.gne_regions(sol, gnep, solver.mpavi)
 
-    
-    # Test solution: x1 = 1 - x2, -1 < x2 < 0.5
+    # Theorem 1: θ ∈ ∪E_r ⇔ x(θ) is a GNE. GNE set: x1 = 1 - x2, -1 ≤ x2 ≤ 0.5
     tol = 1e-6
-    all_solutions_found = true
-    for θ in θlb[1]:0.1:θub[1]
-        x = DyNECT.evaluatePWA(sol, [θ])
-        if !isnothing(x)
-            all_solutions_found = all_solutions_found & (norm(x[1] - (1 - x[2])) < tol)
-            all_solutions_found = all_solutions_found & (-1.0 <= x[2] <= 0.5)
-        end
-    end
-    @test all_solutions_found
+    x_gne = [x for x in (DyNECT.evaluate_gne(regions, [θ]) for θ in range(θlb[1], θub[1]; length=2001)) if !isnothing(x)]
+    @test !isempty(x_gne)
+    @test all(norm(x[1] - (1 - x[2])) < tol && -1.0 - tol <= x[2] <= 0.5 + tol for x in x_gne)
+    @test minimum(x[2] for x in x_gne) < -1.0 + 1e-2 && maximum(x[2] for x in x_gne) > 0.5 - 1e-2
+
+    # Algorithm 1, social welfare J1 + J2 = x1²/2 + x2² on x1 + x2 = 1 → x = (2/3, 1/3)
+    res = CommonSolve.solve(OptimalGNEP(gnep, x -> 0.5x[1]^2 + x[2]^2), DyNECT.PWAConvexOptSolver; θub = θub, θlb = θlb, verbose = 0)
+    @test norm(res.x - [2 / 3, 1 / 3]) < tol
 end
 
 
@@ -225,22 +225,27 @@ end
     # restrict parameter space for reparametrization
     θub =  [5.0; 5.0]
     θlb = [-5.0; -5.0]
-    sol = CommonSolve.solve(gnep, DyNECT.NabetaniParametrizationSolver, θub = θub, θlb = θlb, verbose = 0)
+    solver = CommonSolve.init(gnep, DyNECT.NabetaniParametrizationSolver; θub = θub, θlb = θlb, verbose = 0)
+    sol = CommonSolve.solve!(solver)
+    regions = DyNECT.gne_regions(sol, gnep, solver.mpavi)
 
-    # Test solution: x₂ = min(1 - x₁, 2 - 4x₁) for x₁ ∈ [0, .5]
-
+    # Test solution (Theorem 1): x₂ = min(1 - x₁, 2 - 4x₁) for x₁ ∈ [0, .5] at every θ ∈ ∪E_r.
+    # E_r can be lower dimensional, so random θ are first projected onto {Eθ = e}.
     tol = 1e-5
     all_solutions_found = true
-    for test in 1:1000
+    n_found = 0
+    for test in 1:1000, R in regions
         θ = rand(2) .* (θub .- θlb) .+ θlb
-        x = DyNECT.evaluatePWA(sol, θ)
-
+        isempty(R.e) || (θ -= pinv(R.E) * (R.E * θ - R.e))
+        x = DyNECT.evaluate_gne([R], θ)
         if !isnothing(x)
+            n_found += 1
             x2_sol = min(1-x[1], 2-4*x[1])
             all_solutions_found = all_solutions_found & (norm(x[2] - x2_sol) < tol)
-            all_solutions_found = all_solutions_found & (0.0 <= x[1] <= 0.5)
+            all_solutions_found = all_solutions_found & (-tol <= x[1] <= 0.5 + tol)
         end
     end
+    @test n_found > 0
     @test all_solutions_found
 
     # Test optimal selection: x_expected is the closest point on x₂ = min(1-x₁, 2-4x₁), x₁ ∈ [0, .5]

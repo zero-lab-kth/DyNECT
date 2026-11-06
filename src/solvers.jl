@@ -689,7 +689,7 @@ end
 
 function CommonSolve.init(gnep::StaticGNEP, ::Type{NabetaniParametrizationSolver}; θub=nothing, θlb=nothing, verbose::Int64=1)
 
-    options = ParametricDAQP.Settings(verbose=verbose)
+    options = ParametricDAQP.Settings(verbose=verbose, store_AS=true)
     mpavi = NabetaniParametrization(gnep, θub=θub, θlb=θlb)
 
     return NabetaniParametrizationSolver(gnep, mpavi, options, Ref(:Initialized))
@@ -714,9 +714,11 @@ function CommonSolve.solve!(solver::NabetaniParametrizationSolver)
          lb = mpAVI.lb)
 
     (sol, info) = ParametricDAQP.mpsolve(raw, Θ; opts = solver.options)
-    
-    # Remove critical regions not associated to Nash equilibria
-    filter_gne_crs!(sol, solver.gnep)
+
+    # No region filtering: the regions containing GNEs are characterized by the
+    # equal-slack equality of `gne_regions` (ParametricDAQP only returns a subset of
+    # the active set, so active-set based filtering is not reliable).
+    sol.status == :Solved || @warn "[NabetaniParametrizationSolver] ParametricDAQP status $(sol.status): partial map"
     solver.status[] = :Solved
     return sol
 end
@@ -728,19 +730,26 @@ struct PWAConvexOptSolver
     optGNEP::OptimalGNEP
     status::Ref{Symbol}
     verbose::Int64
+    θub::Union{Vector{Float64},Nothing}
+    θlb::Union{Vector{Float64},Nothing}
 end
 
-function CommonSolve.init(optGNEP::OptimalGNEP, ::Type{PWAConvexOptSolver}; verbose::Int64=1)
-    return PWAConvexOptSolver(optGNEP, Ref(:Initialized), verbose)
+function CommonSolve.init(optGNEP::OptimalGNEP, ::Type{PWAConvexOptSolver}; θub=nothing, θlb=nothing, verbose::Int64=1)
+    return PWAConvexOptSolver(optGNEP, Ref(:Initialized), verbose, θub, θlb)
 end
 
+# Algorithm 1: explicit GNE map (Nabetani mpAVI), then one convex problem per region
+# over the equal-slack set E_r; no region filtering.
 function CommonSolve.solve!(solver::PWAConvexOptSolver)
     GNEP = solver.optGNEP.GNEP
-    GNEPsol = CommonSolve.solve(GNEP, NabetaniParametrizationSolver; verbose=solver.verbose)
+    nab = CommonSolve.init(GNEP, NabetaniParametrizationSolver; θub=solver.θub, θlb=solver.θlb, verbose=solver.verbose)
+    GNEPsol = CommonSolve.solve!(nab)
     sol = select_optimal_gne(
         GNEPsol,
+        GNEP,
+        nab.mpavi,
         solver.optGNEP.ϕ,
         solver.optGNEP.is_quadratic)
     solver.status[] = :Solved
-    return (x=sol.u_star, ϕ=sol.φ_star)
+    return (x=sol.u_star, ϕ=sol.φ_star, θ=sol.θ_star, result=sol)
 end
