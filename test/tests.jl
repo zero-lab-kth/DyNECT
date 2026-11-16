@@ -199,6 +199,44 @@ end
 
 
 
+@testset "GNE certificate and Theorem 1" begin
+    # Rosen: J₁ = ½x₁² − x₁x₂, J₂ = x₂² + x₁x₂, x₁ + x₂ ≥ 1; GNE set: x₁ + x₂ = 1, ½ ≤ x₁ ≤ 2
+    rosen = DyNECT.StaticGNEP([[[1.;;], [-1.;;]], [[1.;;], [2.;;]]], [[0.], [0.]],
+                              [zeros(0, 1), zeros(0, 1)], [Float64[], Float64[]], [[-1.;;], [-1.;;]], [-1.])
+    # independent certificate: GNEs pass, points off the GNE set fail
+    @test all(DyNECT.is_gne(rosen, [t, 1 - t]).ok for t in range(0.5, 2; length=31))
+    @test !DyNECT.is_gne(rosen, [0.4, 0.6]).ok                 # agent 1 deviates upwards
+    @test !DyNECT.is_gne(rosen, [2.5, -1.5]).ok                # agent 2 deviates upwards
+    @test !DyNECT.is_gne(rosen, [0.3, 0.3]).ok                 # infeasible
+    # Λ (Lemma 2): the equal-slack allocation of a GNE leaves no slack to agent N
+    @test DyNECT.equal_slack_allocation(rosen, [0.8, 0.2]) ≈ [-0.8]
+
+    solver = CommonSolve.init(rosen, DyNECT.NabetaniParametrizationSolver; θub=[5.0], θlb=[-5.0], verbose=0)
+    sol = CommonSolve.solve!(solver)
+    regions = DyNECT.gne_regions(sol, rosen, solver.mpavi)
+    # Theorem 1 (⊆): every GNE is recovered at θ = Λ(x)
+    @test all(DyNECT.in_gne_map(regions, rosen, [t, 1 - t]).found for t in range(0.5, 2; length=31))
+    # Theorem 1 (⊇): every point of every E_r is a certified GNE
+    chk = DyNECT.check_gne_map(sol, rosen, solver.mpavi)
+    @test chk.ok
+    @test sort([r.dim for r in chk.regions]) == [0, 0, 1]      # two endpoints + the GNE segment
+
+    # Degenerate case: agent 3 does not enter the shared row (zero row in A_sh[3]).
+    # ParametricDAQP never reports that row as active, so the active-set filter drops every region,
+    # while the equal-slack sets still give exactly the GNE set {x₁ + x₂ = 1, ½ ≤ x₁ ≤ 2, x₃ = 0}.
+    g3 = DyNECT.StaticGNEP([[[1.;;], [-1.;;], [0.;;]], [[1.;;], [2.;;], [0.;;]], [[0.;;], [0.;;], [1.;;]]],
+                           [[0.], [0.], [0.]], [zeros(0, 1) for _ in 1:3], [Float64[] for _ in 1:3],
+                           [[-1.;;], [-1.;;], [0.;;]], [-1.])
+    s3 = CommonSolve.init(g3, DyNECT.NabetaniParametrizationSolver; θub=[4.4, 4.4], θlb=[-5.6, -5.6], verbose=0, AS0=[1, 2])
+    sol3 = CommonSolve.solve!(s3)
+    @test DyNECT.filter_gne_crs!(deepcopy(sol3), g3) == 0
+    reg3 = DyNECT.gne_regions(sol3, g3, s3.mpavi)
+    @test DyNECT.check_gne_map(sol3, g3, s3.mpavi).ok
+    @test all(DyNECT.in_gne_map(reg3, g3, [t, 1 - t, 0.0]).found for t in range(0.5, 2; length=31))
+    res = DyNECT.select_optimal_gne(sol3, g3, s3.mpavi, x -> 0.5x[1]^2 + x[2]^2 + 0.5x[3]^2, true; verify=true)
+    @test norm(res.u_star - [2 / 3, 1 / 3, 0.0]) < 1e-6
+end
+
 @testset "OptimalGNESelection" begin
     # Jᵢ = |xᵢ-10|²
     # x₁ + x₂ ≤ 1; 

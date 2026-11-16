@@ -685,14 +685,15 @@ struct NabetaniParametrizationSolver
     mpavi::mpAVI
     options::ParametricDAQP.Settings
     status::Ref{Symbol}
+    AS0::Union{Nothing,Vector{Int}}    # optional initial active set passed to ParametricDAQP
 end
 
-function CommonSolve.init(gnep::StaticGNEP, ::Type{NabetaniParametrizationSolver}; θub=nothing, θlb=nothing, verbose::Int64=1)
+function CommonSolve.init(gnep::StaticGNEP, ::Type{NabetaniParametrizationSolver}; θub=nothing, θlb=nothing, verbose::Int64=1, AS0=nothing)
 
     options = ParametricDAQP.Settings(verbose=verbose, store_AS=true)
     mpavi = NabetaniParametrization(gnep, θub=θub, θlb=θlb)
 
-    return NabetaniParametrizationSolver(gnep, mpavi, options, Ref(:Initialized))
+    return NabetaniParametrizationSolver(gnep, mpavi, options, Ref(:Initialized), AS0)
 end
 
 function CommonSolve.solve!(solver::NabetaniParametrizationSolver)
@@ -713,7 +714,8 @@ function CommonSolve.solve!(solver::NabetaniParametrizationSolver)
          ub = mpAVI.ub,
          lb = mpAVI.lb)
 
-    (sol, info) = ParametricDAQP.mpsolve(raw, Θ; opts = solver.options)
+    (sol, info) = isnothing(solver.AS0) ? ParametricDAQP.mpsolve(raw, Θ; opts = solver.options) :
+                  ParametricDAQP.mpsolve(raw, Θ; opts = solver.options, AS0 = solver.AS0)
 
     # No region filtering: the regions containing GNEs are characterized by the
     # equal-slack equality of `gne_regions` (ParametricDAQP only returns a subset of
@@ -732,24 +734,27 @@ struct PWAConvexOptSolver
     verbose::Int64
     θub::Union{Vector{Float64},Nothing}
     θlb::Union{Vector{Float64},Nothing}
+    verify::Bool
+    AS0::Union{Nothing,Vector{Int}}
 end
 
-function CommonSolve.init(optGNEP::OptimalGNEP, ::Type{PWAConvexOptSolver}; θub=nothing, θlb=nothing, verbose::Int64=1)
-    return PWAConvexOptSolver(optGNEP, Ref(:Initialized), verbose, θub, θlb)
+function CommonSolve.init(optGNEP::OptimalGNEP, ::Type{PWAConvexOptSolver}; θub=nothing, θlb=nothing, verbose::Int64=1, verify::Bool=false, AS0=nothing)
+    return PWAConvexOptSolver(optGNEP, Ref(:Initialized), verbose, θub, θlb, verify, AS0)
 end
 
 # Algorithm 1: explicit GNE map (Nabetani mpAVI), then one convex problem per region
 # over the equal-slack set E_r; no region filtering.
 function CommonSolve.solve!(solver::PWAConvexOptSolver)
     GNEP = solver.optGNEP.GNEP
-    nab = CommonSolve.init(GNEP, NabetaniParametrizationSolver; θub=solver.θub, θlb=solver.θlb, verbose=solver.verbose)
+    nab = CommonSolve.init(GNEP, NabetaniParametrizationSolver; θub=solver.θub, θlb=solver.θlb, verbose=solver.verbose, AS0=solver.AS0)
     GNEPsol = CommonSolve.solve!(nab)
     sol = select_optimal_gne(
         GNEPsol,
         GNEP,
         nab.mpavi,
         solver.optGNEP.ϕ,
-        solver.optGNEP.is_quadratic)
+        solver.optGNEP.is_quadratic;
+        verify=solver.verify)
     solver.status[] = :Solved
     return (x=sol.u_star, ϕ=sol.φ_star, θ=sol.θ_star, result=sol)
 end
