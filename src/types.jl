@@ -759,11 +759,13 @@ struct OptimalGNEResult
     region_id::Int          #Which critical region contained optimum
     all_candidates::Vector  #All regional candidates for analysis
     γ_star::Vector{Float64} #Optimal leader parameter (empty without leader)
-    status::Symbol          #:optimal, :local or :partial (see select_optimal_gne)
+    status::Symbol          #:optimal (over the represented GNE set), :unverified or :partial (see select_optimal_gne)
     map_status::Symbol      #ParametricDAQP status of the explicit map
     region_status::Dict{Int,Symbol} #per critical region: regional problem status
+    convexity::Symbol       #:verified, :assumed, :nonconvex or :unknown
+    box_boundary::Bool      #selected allocation on the boundary of the parameter box
 end
-OptimalGNEResult(θ, u, φ, r, c) = OptimalGNEResult(θ, u, φ, r, c, Float64[], :unknown, :unknown, Dict{Int,Symbol}())
+OptimalGNEResult(θ, u, φ, r, c) = OptimalGNEResult(θ, u, φ, r, c, Float64[], :unknown, :unknown, Dict{Int,Symbol}(), :unknown, false)
 
 function Base.show(io::IO, result::OptimalGNEResult)
     println(io, "OptimalGNEResult")
@@ -772,6 +774,7 @@ function Base.show(io::IO, result::OptimalGNEResult)
     println(io, "  φ*: $(round(result.φ_star; digits=8))")
     isempty(result.γ_star) || println(io, "  γ*: $(round.(result.γ_star; digits=6))")
     println(io, "  region: $(result.region_id)")
-    println(io, "  status: $(result.status) (map: $(result.map_status))")
+    println(io, "  status: $(result.status) (map: $(result.map_status), convexity: $(result.convexity))")
+    result.box_boundary && println(io, "  warning: selected allocation on the parameter-box boundary")
     println(io, "  candidates: $(length(result.all_candidates))")
 end

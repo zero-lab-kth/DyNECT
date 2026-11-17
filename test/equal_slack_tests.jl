@@ -139,7 +139,7 @@ slacks(g, θ, x) = (offs = cumsum([0; g.n]); xi = [x[offs[i]+1:offs[i+1]] for i 
         g = rosen([-1.0]); M = mapof(g; θub=[5.0], θlb=[-5.0])
         r = DyNECT.select_optimal_gne(M.sol, g, M.mp, x -> 0.5x[1]^2 + x[2]^2, true; verify=true)
         @test norm(r.u_star - [2 / 3, 1 / 3]) < 1e-8
-        @test r.status == :optimal && r.map_status == :Solved
+        @test r.status == :optimal && r.map_status == :Solved && r.convexity == :verified && !r.box_boundary
         @test DyNECT.is_gne(g, r.u_star).ok
         # basic example: projections onto x₂ = min(1 − x₁, 2 − 4x₁), x₁ ∈ [0, ½]
         g = basic(); M = mapof(g; θub=[5.0, 5.0], θlb=[-5.0, -5.0])
@@ -192,12 +192,20 @@ slacks(g, θ, x) = (offs = cumsum([0; g.n]); xi = [x[offs[i]+1:offs[i+1]] for i 
         # numerical coverage check of the enumeration (evidence, not a proof): every grid point of the box,
         # boundary included, with Y(θ) ≠ ∅ lies in some closed critical region
         @test all(!isnothing(DyNECT.evaluatePWA(M.sol, [t])) for t in range(-5, 5; length=1001))
-        # nonquadratic objective: Ipopt path; convexity neither verified nor assumed → :local
+        # nonquadratic objective: Ipopt path; convexity neither verified nor assumed → :unverified
         g = rosen([-1.0]); M = mapof(g; θub=[5.0], θlb=[-5.0])
         r = DyNECT.select_optimal_gne(M.sol, g, M.mp, x -> sqrt(1 + (x[1] - 1)^2), false)
-        @test r.status == :local && norm(r.u_star - [1.0, 0.0]) < 1e-6
+        @test r.status == :unverified && r.convexity == :unknown && norm(r.u_star - [1.0, 0.0]) < 1e-6
         r = DyNECT.select_optimal_gne(M.sol, g, M.mp, x -> sqrt(1 + (x[1] - 1)^2), false; assume_convex=true)
-        @test r.status == :optimal
+        @test r.status == :optimal && r.convexity == :assumed
+        # known nonconvex quadratic: −(x₁ − 1)² on the GNE segment x₁ ∈ [½, 2] (reduced Hessian < 0) is not
+        # sent to Clarabel; the regions are solved locally with Ipopt and the status is :unverified. The
+        # endpoints are separate point regions, so the best candidate is the far endpoint x = (2, −1).
+        r = DyNECT.select_optimal_gne(M.sol, g, M.mp, x -> -(x[1] - 1)^2, true)
+        @test r.convexity == :nonconvex && r.status == :unverified
+        @test norm(r.u_star - [2.0, -1.0]) < 1e-6 && DyNECT.is_gne(g, r.u_star).ok
+        r = DyNECT.select_optimal_gne(M.sol, g, M.mp, x -> -(x[1] - 1)^2, true; assume_convex=true)
+        @test r.convexity == :nonconvex && r.status == :unverified          # a detected nonconvexity overrides the assumption
         # incomplete enumeration propagates to the selection status
         lp = DyNECT.LeaderParametrizedGNEP(rosen([-1.0]), zeros(2, 1), fill(-1.0, 1, 1))
         s = CommonSolve.init(lp, DyNECT.NabetaniParametrizationSolver; θub=[5.0], θlb=[-5.0], γub=[0.6], γlb=[-0.4],
@@ -206,5 +214,24 @@ slacks(g, θ, x) = (offs = cumsum([0; g.n]); xi = [x[offs[i]+1:offs[i+1]] for i 
         @test s.status[] != :Solved
         r = DyNECT.select_optimal_gne(sol, lp, s.mpavi, (x, γ) -> 0.5x[1]^2 + x[2]^2, true)
         @test r.status == :partial && r.map_status == s.status[]
+    end
+
+    @testset "G. parameter-box limitation (represented vs. original GNE set)" begin
+        # Rosen K = 1: GNE set x₁ ∈ [½, 2], equal-slack allocation θ = Λ(x) = −x₁ ∈ [−2, −½].
+        # With θ ∈ [−1.5, 5], GNEs with x₁ > 1.5 are genuine but not represented.
+        g = rosen([-1.0]); M = mapof(g; θub=[5.0], θlb=[-1.5]); R = DyNECT.gne_regions(M.sol, g, M.mp)
+        x = [1.8, -0.8]
+        @test DyNECT.is_gne(g, x).ok
+        @test DyNECT.equal_slack_allocation(g, x) ≈ [-1.8]
+        @test !DyNECT.in_gne_map(R, g, x).found                       # excluded by the box
+        @test DyNECT.in_gne_map(R, g, [1.5, -0.5]).found               # boundary GNE still represented
+        # selection for target (2, −1): optimal over the represented set only, flagged on the box boundary
+        φ(x) = (x[1] - 2)^2 + (x[2] + 1)^2
+        r = DyNECT.select_optimal_gne(M.sol, g, M.mp, φ, true)
+        @test norm(r.u_star - [1.5, -0.5]) < 1e-8 && r.status == :optimal && r.box_boundary
+        # with a box containing every GNE allocation the true optimum (2, −1) is found and not flagged
+        M = mapof(g; θub=[5.0], θlb=[-5.0])
+        r = DyNECT.select_optimal_gne(M.sol, g, M.mp, φ, true)
+        @test norm(r.u_star - [2.0, -1.0]) < 1e-8 && r.status == :optimal && !r.box_boundary
     end
 end
