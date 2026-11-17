@@ -279,6 +279,7 @@ slacks(g, θ, x) = (offs = cumsum([0; g.n]); xi = [x[offs[i]+1:offs[i+1]] for i 
         end
         @test nseg == 2
         @test r.convexity == :nonconvex && r.status == :unverified   # the middle region is genuinely nonconvex
+        @test all(c.eq_residual <= 1e-9 for c in r.all_candidates)        # unreduced equal-slack equality
         # a solver reporting OPTIMAL at θ = 0, outside every E_r: no infeasible candidate may be selected
         MOIU = JuMP.MOI.Utilities
         lying() = (m = MOIU.MockOptimizer(MOIU.UniversalFallback(MOIU.Model{Float64}()));

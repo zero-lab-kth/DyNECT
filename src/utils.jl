@@ -304,7 +304,9 @@ box; equal-slack equality reduced to independent rows). ``K_r p + h_r`` is a GNE
 ``p \in \mathcal E_r`` (Nabetani et al. 2011, Thms. 3.5–3.6). Soundness needs a valid law and convex
 players (symmetric ``Q_{ii} \succeq 0``); completeness also needs a unique pVI solution at the
 equal-slack allocation (e.g. ``H + H^\top \succ 0``), the allocation in the box and a complete map.
-Regions with an inconsistent equality (`consistent = false`) are returned only if `include_inconsistent`.
+The reduction uses a numerical rank decision, so ``\mathcal E_r`` is exact only up to that tolerance;
+`E0, e0` hold the unreduced equality. Regions with an inconsistent equality (`consistent = false`) are
+returned only if `include_inconsistent`.
 """
 function gne_regions(sol::ParametricDAQP.Solution, game::StaticGNEP, mpavi::mpAVI;
                      Bγ::AbstractMatrix=zeros(length(game.b_sh), 0), include_inconsistent::Bool=false)
@@ -324,11 +326,12 @@ function gne_regions(sol::ParametricDAQP.Solution, game::StaticGNEP, mpavi::mpAV
         nθ = size(K, 2)
         Ain = [G; mpavi.A * K - mpavi.B; I(nθ); -I(nθ)]
         bin = [g; mpavi.b - mpavi.A * h; mpavi.ub; -mpavi.lb]
-        E, e = reduce_equality(equal_slack_constraint(game, K, h; Bγ=Bγ)...)
+        E0, e0 = equal_slack_constraint(game, K, h; Bγ=Bγ)
+        E, e = reduce_equality(E0, e0)
         consistent = !isnothing(E)
         (consistent || include_inconsistent) || continue
         consistent || ((E, e) = (zeros(0, nθ), Float64[]))
-        push!(regions, (K=K, h=h, G=G, g=g, Ain=Ain, bin=bin, E=E, e=e, AS=AS, region=k, consistent=consistent))
+        push!(regions, (K=K, h=h, G=G, g=g, Ain=Ain, bin=bin, E=E, e=e, E0=E0, e0=e0, AS=AS, region=k, consistent=consistent))
     end
     return regions
 end
@@ -492,7 +495,8 @@ end
 Algorithm 1: minimize ``\phi(K_r p + h_r)`` over every ``\mathcal E_r`` (∩ `Γ = (A, b)` on γ) and keep
 the best candidate. Only GNEs whose allocation lies in the parameter box are represented
 (`box_boundary` flags a selection on the box boundary). Every candidate satisfies the constraints of
-its ``\mathcal E_r`` up to 1e-6.
+its ``\mathcal E_r`` (reduced equality) up to 1e-6; `eq_residual` is its residual in the unreduced
+equal-slack equality. `:optimal` says nothing about GNEs outside the box.
 - `region_status`: `:solved`; `:inexact` (solver almost optimal, or its point violated
   ``\mathcal E_r`` by more than 1e-6 and was repaired); `:infeasible_candidate` (no point within
   1e-6, discarded); `:infeasible` (Clarabel certificate) and `:empty_inconsistent` (empty sets);
@@ -500,7 +504,8 @@ its ``\mathcal E_r`` up to 1e-6.
 - `convexity`: `:verified` (quadratic ϕ, reduced Hessians PSD), `:assumed`, `:nonconvex`, `:unknown`.
 - `status`: `:optimal` (complete map, every region `:solved` or empty, convexity verified or
   assumed: optimal over the represented GNEs), `:unverified` (convexity not established, or the
-  `verify` certificate failed), `:partial` otherwise.
+  `verify` certificate failed: the best regional KKT point, neither global nor local optimality over
+  the GNE set is established), `:partial` otherwise.
 """
 function select_optimal_gne(
     sol::ParametricDAQP.Solution,
@@ -581,7 +586,8 @@ function select_optimal_gne(
         end
         regional_residual(θraw, R, Ain, bin) <= 1e-6 || (st = region_status[R.region] = :inexact)
         push!(region_convexity, conv)
-        push!(candidates, (θ=θ_opt, u=R.K * θ_opt + R.h, γ=γof(θ_opt), φ=ϕp(θ_opt), region=R.region, status=st, convexity=conv))
+        push!(candidates, (θ=θ_opt, u=R.K * θ_opt + R.h, γ=γof(θ_opt), φ=ϕp(θ_opt), region=R.region, status=st, convexity=conv,
+                           eq_residual=norm(R.E0 * θ_opt - R.e0, Inf)))
     end
     if isempty(candidates)
         all(in((:infeasible, :empty_inconsistent)), values(region_status)) &&
@@ -599,6 +605,7 @@ function select_optimal_gne(
     nβ = length(best.θ) - nγ
     box_boundary = any(k -> min(best.θ[k] - mpavi.lb[k], mpavi.ub[k] - best.θ[k]) <= 1e-7, 1:nβ)
     box_boundary && @warn "[select_optimal_gne] selected allocation on the parameter-box boundary: enlarge θub/θlb to check for GNEs outside the box" best.θ[1:nβ]
+    best.eq_residual > 1e-6 && @warn "[select_optimal_gne] selected point violates the unreduced equal-slack equality by $(best.eq_residual)"
     if verify && !is_gne(game_at(best.γ), best.u).ok
         @warn "[select_optimal_gne] selected point failed the GNE certificate"
         status == :optimal && (status = :unverified)

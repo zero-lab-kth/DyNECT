@@ -21,6 +21,7 @@ shared rows.
 function NabetaniParametrization(lp::LeaderParametrizedGNEP;
     θub::Union{Vector{Float64},Nothing}=nothing, θlb::Union{Vector{Float64},Nothing}=nothing,
     γub::Vector{Float64}, γlb::Vector{Float64})
+    @assert length(γub) == length(γlb) == lp.n_γ "γ bounds must have length n_γ = $(lp.n_γ)"
     base = NabetaniParametrization(lp.gnep; θub=θub, θlb=θlb)
     g = lp.gnep
     m_sh = length(g.b_sh)
