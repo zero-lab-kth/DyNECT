@@ -31,7 +31,11 @@ ParametricDAQP = "0.6"
 
 [sources]
 Monviso = {url = "https://github.com/nicomignoni/Monviso.jl.git", rev = "vi-based"}
-ParametricDAQP = {url = "https://github.com/darnstrom/ParametricDAQP.jl"}
+# Pinned for reproducibility: ParametricDAQP v0.6.1 (c58a1f0) is the last revision that resolves with
+# DAQP 0.8 (DAQPBase 0.4), the DAQP version in [compat]. v0.6.2 needs DAQPBase 0.5 (DAQP 0.9, untested
+# here); v0.6.3 and later need DAQPBase 0.6, for which no registered DAQP release exists yet, so the
+# unpinned source does not resolve.
+ParametricDAQP = {url = "https://github.com/darnstrom/ParametricDAQP.jl", rev = "c58a1f0e108f8de02f238bf7803d879112543099"}
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
