@@ -492,20 +492,8 @@ end
     select_optimal_gne(sol, game, mpavi, ϕ, is_quadratic, optimizer=Clarabel.Optimizer;
                        verify=false, assume_convex=false, Bγ=zeros(m, 0), Γ=nothing, game_at=γ -> game)
 
-Algorithm 1: minimize ``\phi(K_r p + h_r)`` over every ``\mathcal E_r`` (∩ `Γ = (A, b)` on γ) and keep
-the best candidate. Only GNEs whose allocation lies in the parameter box are represented
-(`box_boundary` flags a selection on the box boundary). Every candidate satisfies the constraints of
-its ``\mathcal E_r`` (reduced equality) up to 1e-6; `eq_residual` is its residual in the unreduced
-equal-slack equality. `:optimal` says nothing about GNEs outside the box.
-- `region_status`: `:solved`; `:inexact` (solver almost optimal, or its point violated
-  ``\mathcal E_r`` by more than 1e-6 and was repaired); `:infeasible_candidate` (no point within
-  1e-6, discarded); `:infeasible` (Clarabel certificate) and `:empty_inconsistent` (empty sets);
-  `:infeasible_uncertified`, `:inexact_infeasible`, `:failed`.
-- `convexity`: `:verified` (quadratic ϕ, reduced Hessians PSD), `:assumed`, `:nonconvex`, `:unknown`.
-- `status`: `:optimal` (complete map, every region `:solved` or empty, convexity verified or
-  assumed: optimal over the represented GNEs), `:unverified` (convexity not established, or the
-  `verify` certificate failed: the best regional KKT point, neither global nor local optimality over
-  the GNE set is established), `:partial` otherwise.
+Algorithm 1: minimize ϕ over every ``\mathcal E_r`` and return the best candidate (feasible to 1e-6).
+`status` is `:optimal` (over the GNEs represented in the box), `:unverified` or `:partial`.
 """
 function select_optimal_gne(
     sol::ParametricDAQP.Solution,
