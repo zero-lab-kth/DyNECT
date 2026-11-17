@@ -341,9 +341,17 @@ For each critical region ``\mathcal P_r`` of the explicit solution `sol` of the 
 ```
 A pVI solution ``x = K_r p + h_r`` is a GNE if and only if ``p \in \mathcal E_r`` for some ``r``
 (Nabetani et al. 2011, Thms. 3.5–3.6, with the equal-slack allocation of
-[`equal_slack_map`](@ref)); no active-set based filtering is used. This is exact for the regions
-returned by ParametricDAQP; completeness additionally requires that the enumeration covers the
-parameter box (check `sol.status`) and that the allocations of the GNEs of interest lie in it.
+[`equal_slack_map`](@ref)); no active-set based filtering is used. Assumptions:
+- *Soundness* (every ``K_r p + h_r`` with ``p \in \mathcal E_r`` is a GNE) requires that the
+  regional law solves the parametrized VI on ``\mathcal P_r`` and that every player's problem is
+  convex (symmetric ``Q_{ii} \succeq 0``, linear constraints); it does not require monotonicity
+  of the pseudo-gradient.
+- *Completeness* (every GNE is represented) additionally requires that the parametrized VI has a
+  unique solution at the equal-slack allocation of the GNE (strong monotonicity, i.e. a positive
+  definite symmetric part of ``H``, is sufficient but not necessary), that this allocation lies in
+  the parameter box, and that the enumeration covers the box (check `sol.status`).
+- The equality is reduced to independent rows with a numerical rank decision, so the
+  representation is exact only up to that tolerance.
 
 Fields: `K, h` (law in original coordinates, recomputed from the active set via the KKT system),
 `G, g` (region polytope in original coordinates), `Ain, bin` (all inequalities of
@@ -356,13 +364,15 @@ function gne_regions(sol::ParametricDAQP.Solution, game::StaticGNEP, mpavi::mpAV
                      Bγ::AbstractMatrix=zeros(length(game.b_sh), 0), include_inconsistent::Bool=false)
     n = size(mpavi.H, 1)
     λmin = minimum(eigvals(Symmetric((mpavi.H + mpavi.H') / 2)))
-    λmin > 0 || @warn "[gne_regions] H is not positive definite (λ_min = $λmin): the pVI solution need not be unique and the equal-slack characterization is not guaranteed"
+    λmin > 0 || @warn "[gne_regions] the symmetric part of H is not positive definite (λ_min = $λmin): this sufficient condition for a unique parametrized-VI solution fails, so completeness of the represented GNE set is not guaranteed (soundness of the certified sets is unaffected)"
     regions = NamedTuple[]
     for (k, cr) in enumerate(sol.CRs)
         # region polytope Athᵀ p̃ ≤ bth in normalized coordinates p̃ = (p - translation) .* scaling
         G = cr.Ath' * Diagonal(sol.scaling)
         g = cr.bth + G * sol.translation
-        # exact law from the (full-row-rank) active set; the stored law cr.z is not used
+        # law from the (full-row-rank) active set via its KKT system. The stored law cr.z is not
+        # used: ParametricDAQP v0.6.1 drops an active constraint whose multiplier is constant in
+        # the parameter (normalize_model sets its normalization factor to 0)
         AS = Int.(collect(cr.AS))
         Aa = mpavi.A[AS, :]
         nA = length(AS)
@@ -419,6 +429,8 @@ must not improve agent ``i``'s cost by more than `tol` (relative to ``\max(1, |J
 right-hand sides are relaxed where needed so that ``x_i`` is feasible for its own best-response
 problem; constraint violations of `x` are reported in `infeas` and also checked against `tol`.
 `gaps[i]` is the cost improvement of the best response and `gap = maximum(gaps)`.
+The cost of player ``i`` is taken as ``\tfrac12 x_i^\top Q_{ii} x_i + \dots``, so ``Q_{ii}`` is
+assumed symmetric (as it must be for the pseudo-gradient ``Hx + f`` to describe this game).
 """
 function is_gne(game::StaticGNEP, x::AbstractVector; tol::Float64=1e-7)
     N = game.N
@@ -520,17 +532,21 @@ end
 # Interior-point solutions are only accurate to O(1e-6) in p. Refine the regional optimum on
 # the affine hull of the numerically active constraints of E_r: for a quadratic objective by
 # solving the equality-constrained QP exactly (Hessian `P`, gradient `q`), otherwise by
-# projecting onto that affine hull. The refinement is kept only if it is feasible and does not
-# increase the objective `ϕp(p)`.
+# projecting onto that affine hull. The refinement is kept only if it is feasible and either does
+# not increase the objective `ϕp(p)` or moves the point by at most a relative 1e-6.
 function polish_regional_solution(θ::AbstractVector, R, mpavi::mpAVI, ϕp::Function, Ain, bin;
                                   P=nothing, q=nothing, act_tol::Float64=1e-6)
     nθ = length(θ)
     act = findall(bin - Ain * θ .<= act_tol)
-    Aeq = [R.E; Ain[act, :]]
-    beq = [R.e; bin[act]]
-    # rows that are zero up to round-off carry no information and would spoil rank decisions
-    keep = [norm(Aeq[k, :], Inf) > 1e-10 for k in 1:size(Aeq, 1)]
-    Aeq, beq = Aeq[keep, :], beq[keep]
+    # keep the equality and add an active row only if it increases the rank: on degenerate faces
+    # several active rows are parallel and their right-hand sides agree only up to round-off
+    Aeq, beq = Matrix(R.E), copy(R.e)
+    for k in act
+        norm(Ain[k, :], Inf) > 1e-10 || continue
+        A2 = [Aeq; Ain[k:k, :]]
+        rank(A2; rtol=1e-9) > size(Aeq, 1) || continue
+        Aeq, beq = A2, [beq; bin[k]]
+    end
     if isnothing(P)
         isempty(beq) && return θ
         θs = θ - pinv(Aeq) * (Aeq * θ - beq)
@@ -540,7 +556,10 @@ function polish_regional_solution(θ::AbstractVector, R, mpavi::mpAVI, ϕp::Func
         θs = size(Z, 2) == 0 ? θ0 : θ0 - Z * (pinv(Z' * P * Z) * (Z' * (P * θ0 + q)))
     end
     feasible = all(Ain * θs .<= bin .+ 1e-9) && (isempty(R.e) || norm(R.E * θs - R.e, Inf) <= 1e-9)
-    return feasible && ϕp(θs) <= ϕp(θ) + 1e-12 ? θs : θ
+    # accept if the objective does not increase, or if the move is tiny: the solver point may be
+    # slightly infeasible and hence have a slightly lower objective than the feasible refinement
+    small = norm(θs - θ, Inf) <= 1e-6 * max(1.0, norm(θ, Inf))
+    return feasible && (ϕp(θs) <= ϕp(θ) + 1e-12 || small) ? θs : θ
 end
 
 # Hessian and gradient of a quadratic JuMP objective in the variables `θ`
@@ -630,8 +649,11 @@ Statuses are kept separate:
   optimality over GNEs outside the parameter box. `:unverified` if the regional solves are clean
   but convexity is `:nonconvex` or `:unknown` (the result is the best regional KKT point; neither
   global nor local optimality over the GNE set is established). `:partial` otherwise. An error is
-  raised only if no regional problem was solved.
-With `verify = true` the selected point is certified with [`is_gne`](@ref).
+  raised if no regional problem was solved (with a distinct message if every region was certified
+  empty, i.e. no GNE is represented in the parameter box).
+A regional solution whose residual in ``\mathcal E_r`` exceeds `1e-6` is kept as a candidate
+with region status `:inexact`. With `verify = true` the selected point is certified with
+[`is_gne`](@ref); if the numerical certificate fails, the status is downgraded to `:unverified`.
 """
 function select_optimal_gne(
     sol::ParametricDAQP.Solution,
@@ -714,10 +736,20 @@ function select_optimal_gne(
         ϕp(p) = ϕxγ(R.K * p + R.h, γof(p))
         θ_opt = is_quadratic ? polish_regional_solution(value.(θ), R, mpavi, ϕp, Ain, bin; P=P, q=q) :
                                polish_regional_solution(value.(θ), R, mpavi, ϕp, Ain, bin)
+        # the polished point may have been rejected: check the candidate against E_r ∩ Γ itself
+        resid = max(maximum(Ain * θ_opt - bin; init=0.0), isempty(R.e) ? 0.0 : norm(R.E * θ_opt - R.e, Inf))
+        if resid > 1e-6
+            st = :inexact
+            region_status[R.region] = st
+        end
         u_opt = R.K * θ_opt + R.h
         push!(candidates, (θ=θ_opt, u=u_opt, γ=γof(θ_opt), φ=ϕp(θ_opt), region=R.region, status=st, convexity=conv))
     end
-    isempty(candidates) && error("[select_optimal_gne] no regional problem was solved; region statuses: $(region_status)")
+    if isempty(candidates)
+        all(st -> st in (:infeasible, :empty_inconsistent), values(region_status)) &&
+            error("[select_optimal_gne] no GNE is represented: every certified set is empty (no equal-slack allocation of a GNE lies in the parameter box, intersected with Γ if given)")
+        error("[select_optimal_gne] no regional problem was solved; region statuses: $(region_status)")
+    end
     best = candidates[argmin([c.φ for c in candidates])]
     map_status = sol.status
     convexity = any(==(:nonconvex), region_convexity) ? :nonconvex :
@@ -732,7 +764,10 @@ function select_optimal_gne(
     box_boundary && @warn "[select_optimal_gne] the selected allocation lies on the boundary of the parameter box: GNEs whose equal-slack allocation lies outside the box are not represented; enlarge θub/θlb to check" best.θ[1:nβ]
     if verify
         cert = is_gne(game_at(best.γ), best.u)
-        cert.ok || @warn "[select_optimal_gne] selected point failed the GNE certificate" cert.gap cert.infeas
+        if !cert.ok
+            @warn "[select_optimal_gne] selected point failed the numerical GNE certificate; status set to :unverified" cert.gap cert.infeas
+            status == :optimal && (status = :unverified)
+        end
     end
     return OptimalGNEResult(best.θ, best.u, best.φ, best.region, candidates, best.γ, status, map_status,
                             region_status, convexity, box_boundary)

@@ -680,6 +680,16 @@ end
 
 ### Static GNEP solvers
 
+@doc raw"""
+    NabetaniParametrizationSolver
+
+Explicit solution of the Nabetani parametrized VI of a `StaticGNEP` (parameter θ) or a
+`LeaderParametrizedGNEP` (parameter p = [θ; γ]) with ParametricDAQP. `solve!` returns the
+ParametricDAQP solution with *all* critical regions of the parametrized VI, which contain
+non-equilibrium points; no active-set filtering is applied. The GNEs are the points
+``K_r p + h_r`` with ``p \in \mathcal E_r``, obtained with [`gne_regions`](@ref),
+[`evaluate_gne`](@ref) or [`select_optimal_gne`](@ref). `status` holds the ParametricDAQP status.
+"""
 struct NabetaniParametrizationSolver
     gnep::Union{StaticGNEP,LeaderParametrizedGNEP}   # the game; γ data stay in the leader game
     mpavi::mpAVI
@@ -705,7 +715,7 @@ function CommonSolve.init(lp::LeaderParametrizedGNEP, ::Type{NabetaniParametriza
     options = ParametricDAQP.Settings(; verbose=verbose, store_AS=true, limits...)
     mpavi = NabetaniParametrization(lp; θub=θub, θlb=θlb, γub=γub, γlb=γlb)
 
-    # solve! and filter_gne_crs! only need the γ-independent structure of lp.gnep
+    # the leader game is stored itself; gne_regions & co. read Bγ from it
     return NabetaniParametrizationSolver(lp, mpavi, options, Ref(:Initialized), AS0)
 end
 
@@ -768,6 +778,8 @@ function CommonSolve.solve!(solver::PWAConvexOptSolver)
         solver.optGNEP.ϕ,
         solver.optGNEP.is_quadratic;
         verify=solver.verify)
-    solver.status[] = :Solved
+    # :Solved only for a selection that is optimal over the represented GNE set; otherwise the
+    # selection status (:unverified or :partial)
+    solver.status[] = sol.status == :optimal ? :Solved : sol.status
     return (x=sol.u_star, ϕ=sol.φ_star, θ=sol.θ_star, result=sol)
 end

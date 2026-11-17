@@ -2,7 +2,7 @@
 # Algorithm 1 with and without a leader parameter γ. Every equilibrium used as input is checked
 # analytically (comments) and with the independent certificate DyNECT.is_gne.
 
-using DyNECT, Test, LinearAlgebra, CommonSolve, ParametricDAQP, Random
+using DyNECT, Test, LinearAlgebra, CommonSolve, ParametricDAQP, Random, JuMP
 
 # Rosen: J₁ = ½x₁² − x₁x₂, J₂ = x₂² + x₁x₂, x₁ + x₂ ≥ K stored as −x₁ − x₂ ≤ b = −K.
 # Best responses: x₁ = max(x₂, K − x₂), x₂ = max(−x₁/2, K − x₁).
@@ -234,4 +234,51 @@ slacks(g, θ, x) = (offs = cumsum([0; g.n]); xi = [x[offs[i]+1:offs[i+1]] for i 
         r = DyNECT.select_optimal_gne(M.sol, g, M.mp, φ, true)
         @test norm(r.u_star - [2.0, -1.0]) < 1e-8 && r.status == :optimal && !r.box_boundary
     end
+
+    @testset "H. status semantics and safeguards" begin
+        g = rosen([-1.0])
+        # PWAConvexOptSolver reports :Solved only for a selection optimal over the represented set
+        o = CommonSolve.init(OptimalGNEP(g, x -> 0.5x[1]^2 + x[2]^2), DyNECT.PWAConvexOptSolver; θub=[5.0], θlb=[-5.0], verbose=0)
+        res = CommonSolve.solve!(o)
+        @test o.status[] == :Solved && res.result.status == :optimal
+        o = CommonSolve.init(OptimalGNEP(g, x -> -(x[1] - 1)^2), DyNECT.PWAConvexOptSolver; θub=[5.0], θlb=[-5.0], verbose=0)
+        res = CommonSolve.solve!(o)
+        @test o.status[] == :unverified == res.result.status
+        # a failed numerical certificate downgrades :optimal: certify the selected point of K = 1 on the game with
+        # K = 1.5, where x = (2/3, 1/3) is infeasible
+        M = mapof(g; θub=[5.0], θlb=[-5.0])
+        r = DyNECT.select_optimal_gne(M.sol, g, M.mp, x -> 0.5x[1]^2 + x[2]^2, true; verify=true, game_at=γ -> rosen([-1.5]))
+        @test r.status == :unverified && norm(r.u_star - [2 / 3, 1 / 3]) < 1e-8
+        # no equal-slack allocation of a GNE in the box (θ = −x₁ ∈ [−2, −½], box [1, 5]): distinct error
+        M = mapof(g; θub=[5.0], θlb=[1.0])
+        err = try DyNECT.select_optimal_gne(M.sol, g, M.mp, x -> sum(abs2, x), true); "" catch e; sprint(showerror, e) end
+        @test occursin("no GNE is represented", err)
+        # regional Hessian indefinite in (θ, γ) but positive definite on the null space of the equality:
+        # leader Rosen (K = 1 + γ, γ ∈ [−0.4, 0.6]), φ = 2x₁² − 0.2γ². The two outer regions have a segment E_r:
+        #   x₁ = x₂ = K/2:      φ = K²/2 − 0.2γ²,  φ'' = 0.6 > 0, φ' = 1 + 0.6γ > 0  → γ = −0.4, x = (0.3, 0.3),  φ = 0.148
+        #   x₁ = 2K, x₂ = −K:   φ = 8K² − 0.2γ²,   φ'' = 15.6 > 0, φ' = 16K − 0.4γ > 0 → γ = −0.4, x = (1.2, −0.6), φ = 2.848
+        lp = DyNECT.LeaderParametrizedGNEP(g, zeros(2, 1), fill(-1.0, 1, 1))
+        s = CommonSolve.init(lp, DyNECT.NabetaniParametrizationSolver; θub=[5.0], θlb=[-5.0], γub=[0.6], γlb=[-0.4], verbose=0)
+        sol = CommonSolve.solve!(s)
+        φ(x, γ) = 2x[1]^2 - 0.2γ[1]^2
+        r = DyNECT.select_optimal_gne(sol, lp, s.mpavi, φ, true)
+        nseg = 0
+        for R in DyNECT.gne_regions(sol, lp, s.mpavi)
+            size(R.E, 1) == 1 || continue
+            mdl = JuMP.Model(); JuMP.@variable(mdl, pp[1:2])
+            P, _ = DyNECT.quadratic_coefficients(φ(R.K * pp .+ R.h, pp[2:2]), pp)
+            Z = nullspace(R.E)
+            (minimum(eigvals(Symmetric(P))) < 0 && minimum(eigvals(Symmetric(Z' * P * Z))) > 0) || continue
+            nseg += 1
+            c = only(c for c in r.all_candidates if c.region == R.region)
+            xe, φe = abs(c.u[1] - c.u[2]) < 1e-6 ? ([0.3, 0.3], 0.148) : ([1.2, -0.6], 2.848)
+            @test c.convexity == :verified && c.status == :solved
+            @test norm(c.u - xe) < 1e-8
+            @test c.γ ≈ [-0.4] atol = 1e-8
+            @test c.φ ≈ φe
+        end
+        @test nseg == 2
+        @test r.convexity == :nonconvex && r.status == :unverified   # the middle region is genuinely nonconvex
+    end
 end
+
