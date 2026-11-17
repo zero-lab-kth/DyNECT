@@ -681,7 +681,7 @@ end
 ### Static GNEP solvers
 
 struct NabetaniParametrizationSolver
-    gnep::StaticGNEP
+    gnep::Union{StaticGNEP,LeaderParametrizedGNEP}   # the game; γ data stay in the leader game
     mpavi::mpAVI
     options::ParametricDAQP.Settings
     status::Ref{Symbol}
@@ -694,6 +694,19 @@ function CommonSolve.init(gnep::StaticGNEP, ::Type{NabetaniParametrizationSolver
     mpavi = NabetaniParametrization(gnep, θub=θub, θlb=θlb)
 
     return NabetaniParametrizationSolver(gnep, mpavi, options, Ref(:Initialized), AS0)
+end
+
+function CommonSolve.init(lp::LeaderParametrizedGNEP, ::Type{NabetaniParametrizationSolver};
+    θub=nothing, θlb=nothing, γub::Vector{Float64}, γlb::Vector{Float64}, verbose::Int64=1, AS0=nothing,
+    time_limit::Union{Int64,Nothing}=nothing, region_limit::Union{Int64,Nothing}=nothing)
+
+    # Only forward the limits when given, otherwise keep ParametricDAQP defaults
+    limits = (; (k => v for (k, v) in pairs((; time_limit, region_limit)) if !isnothing(v))...)
+    options = ParametricDAQP.Settings(; verbose=verbose, store_AS=true, limits...)
+    mpavi = NabetaniParametrization(lp; θub=θub, θlb=θlb, γub=γub, γlb=γlb)
+
+    # solve! and filter_gne_crs! only need the γ-independent structure of lp.gnep
+    return NabetaniParametrizationSolver(lp, mpavi, options, Ref(:Initialized), AS0)
 end
 
 function CommonSolve.solve!(solver::NabetaniParametrizationSolver)
@@ -721,7 +734,7 @@ function CommonSolve.solve!(solver::NabetaniParametrizationSolver)
     # equal-slack equality of `gne_regions` (ParametricDAQP only returns a subset of
     # the active set, so active-set based filtering is not reliable).
     sol.status == :Solved || @warn "[NabetaniParametrizationSolver] ParametricDAQP status $(sol.status): partial map"
-    solver.status[] = :Solved
+    solver.status[] = sol.status   # :Solved, :TimeLimitReached, :RegionLimitReached, ...
     return sol
 end
 

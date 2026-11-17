@@ -540,3 +540,5 @@ end
     @test norm(vi.b - vi_approx.b) < 1e-5
 
 end
+
+include("equal_slack_tests.jl")

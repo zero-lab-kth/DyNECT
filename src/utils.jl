@@ -218,30 +218,27 @@ end
 @doc raw"""
     filter_gne_crs!(sol, game)
 
-Superseded by [`gne_regions`](@ref) and the equal-slack selection of [`select_optimal_gne`](@ref).
+**Deprecated legacy routine**, kept only for comparisons; not used by the default pipeline.
 
-Keeps only the critical regions whose active set contains either all or none of the
-copies of each shared constraint. ParametricDAQP returns only a full-row-rank subset of
-the active set (e.g. rows of `A_sh` that are zero for a non-incident agent are never
-reported), so this test can reject regions that do contain GNEs. It is kept for reference
-and is no longer called by [`NabetaniParametrizationSolver`](@ref).
+Keeps the critical regions whose active set contains either all or none of the copies of each
+shared constraint (the Nabetani condition evaluated on `cr.AS`). ParametricDAQP returns only a
+*linearly independent* active-set basis, which need not contain every binding constraint (zero
+rows of a non-incident agent, linearly dependent binding rows), so membership in `cr.AS` is not
+equivalent to activity and this test can drop regions that contain GNEs. Use
+[`gne_regions`](@ref), which certifies regions through the equal-slack equality instead.
 """
 function filter_gne_crs!(sol::ParametricDAQP.Solution, game::StaticGNEP)
+    Base.depwarn("filter_gne_crs! evaluates the Nabetani condition on the independent active-set basis and can drop GNE regions; use gne_regions (equal-slack certification) instead.", :filter_gne_crs!)
     N = game.N
     m_sh = length(game.b_sh)
     n_local = sum(size(game.A_loc[i], 1) for i in 1:N)
     shared_start = n_local + 1
-    
+
     filter!(sol.CRs) do cr
         for i in 1:m_sh
-            # Collect all rows of the reformulated constraints associated to the same shared constraints
             player_row_indices = [shared_start + (p - 1) * m_sh + (i - 1) for p in 1:N]
-            # Check if they are all active / inactive
             active_status = [row_idx ∈ cr.AS for row_idx in player_row_indices]
-            all_active = all(active_status)
-            none_active = !any(active_status)
-            # If they are neither all active or inactive, the region does not correspond to a set of GNEs
-            if !(all_active || none_active)
+            if !(all(active_status) || !any(active_status))
                 return false
             end
         end
@@ -251,19 +248,31 @@ function filter_gne_crs!(sol::ParametricDAQP.Solution, game::StaticGNEP)
 end
 
 @doc raw"""
-    equal_slack_map(game::StaticGNEP) -> (L, l)
+    equal_slack_map(game::StaticGNEP; Bγ = zeros(m, 0)) -> (L, Lγ, l)
 
-Affine equal-slack allocation ``\Lambda(x) = Lx + l`` (Nabetani, Tseng, Fukushima, Comput. Optim.
-Appl. 48, 2011, Thm. 3.5). With the parametrization of [`NabetaniParametrization`](@ref)
-(agent ``i<N``: ``A_{\text{sh},i} x_i \le \theta_i``; agent ``N``:
-``A_{\text{sh},N} x_N \le b_{\text{sh}} - \sum_{i<N} \theta_i``), every agent receives its own
-consumption plus an equal share ``s/N`` of the slack ``s = b_{\text{sh}} - \sum_j A_{\text{sh},j} x_j``:
+Equal-slack allocation (Nabetani, Tseng, Fukushima, Comput. Optim. Appl. 48, 2011, Thm. 3.5)
+in DyNECT's allocation convention. With shared constraints ``\sum_j A_{\text{sh},j} x_j \le
+b_{\text{sh}} + B_\gamma\gamma`` (``B_\gamma`` empty without a leader), the Nabetani
+parametrization gives agent ``i<N`` the allocation ``\beta_i = \theta_i`` and agent ``N`` the
+remainder ``\beta_N = b_{\text{sh}} + B_\gamma\gamma - \sum_{i<N}\theta_i``, so that
 ```math
-\Lambda_i(x) = A_{\text{sh},i} x_i + \tfrac1N \Big(b_{\text{sh}} - \sum_{j} A_{\text{sh},j} x_j\Big), \quad i = 1,\dots,N-1.
+\sum_{i=1}^N \beta_i = b_{\text{sh}} + B_\gamma\gamma .
 ```
+The equal-slack allocation gives every agent its own consumption plus an equal share of the slack:
+```math
+\beta_i = A_{\text{sh},i} x_i + \tfrac1N\Big(b_{\text{sh}} + B_\gamma\gamma - \sum_j A_{\text{sh},j} x_j\Big),
+\qquad i = 1,\dots,N,
+```
+and its free part ``\beta_{1:N-1} = Lx + L_\gamma\gamma + l`` is returned, with
+``L = \mathrm{blkdiag}(A_{\text{sh},i})_{i<N} - \tfrac1N \mathbf 1_{N-1}\otimes[A_{\text{sh},1}\cdots A_{\text{sh},N}]``
+(size ``(N-1)m \times n``), ``L_\gamma = \tfrac1N\mathbf 1_{N-1}\otimes B_\gamma`` (size
+``(N-1)m \times n_\gamma``) and ``l = \tfrac1N\mathbf 1_{N-1}\otimes b_{\text{sh}}``.
+In the per-agent form ``g_i(x_i,\gamma) = A_{\text{sh},i}x_i - (b_{\text{sh}}+B_\gamma\gamma)/N``,
+``\sum_i g_i \le 0``, this is ``\beta_i - (b_{\text{sh}}+B_\gamma\gamma)/N = g_i - \tfrac1N\sum_j g_j``.
 """
-function equal_slack_map(game::StaticGNEP)
+function equal_slack_map(game::StaticGNEP; Bγ::AbstractMatrix=zeros(length(game.b_sh), 0))
     N, m = game.N, length(game.b_sh)
+    @assert size(Bγ, 1) == m "Bγ must have m = $m rows"
     offs = cumsum([0; game.n])
     Ā = hcat(game.A_sh...)                        # m × n_total, Σⱼ A_sh,j x_j = Ā x
     L = zeros((N - 1) * m, sum(game.n))
@@ -272,35 +281,46 @@ function equal_slack_map(game::StaticGNEP)
         L[rows, offs[i]+1:offs[i+1]] .= game.A_sh[i]
         L[rows, :] .-= Ā ./ N
     end
-    return L, repeat(game.b_sh ./ N, N - 1)
+    return L, repeat(Matrix{Float64}(Bγ) ./ N, N - 1), repeat(game.b_sh ./ N, N - 1)
 end
 
 @doc raw"""
-    equal_slack_allocation(game::StaticGNEP, x) -> θ
+    equal_slack_allocation(game::StaticGNEP, x; γ = Float64[], Bγ = zeros(m, 0)) -> θ
 
-Equal-slack parameter ``\theta = \Lambda(x)`` of a joint action `x` (see [`equal_slack_map`](@ref)).
-If `x` is a GNE, then `x` solves the Nabetani pVI at this θ.
+Free allocations ``\theta = \beta_{1:N-1} = \Lambda(x,\gamma)`` of the equal-slack allocation
+of `x` (see [`equal_slack_map`](@ref)). If `x` is a GNE, it solves the Nabetani pVI at this θ
+(and, with a leader, at ``p = (\theta, \gamma)``).
 """
-function equal_slack_allocation(game::StaticGNEP, x::AbstractVector)
-    L, l = equal_slack_map(game)
-    return L * x + l
+function equal_slack_allocation(game::StaticGNEP, x::AbstractVector;
+                                γ::AbstractVector=Float64[], Bγ::AbstractMatrix=zeros(length(game.b_sh), 0))
+    L, Lγ, l = equal_slack_map(game; Bγ=Bγ)
+    return L * x + (isempty(γ) ? zeros(length(l)) : Lγ * γ) + l
 end
 
 @doc raw"""
-    equal_slack_constraint(game::StaticGNEP, K, h) -> (E, e)
+    equal_slack_constraint(game::StaticGNEP, K, h; Bγ = zeros(m, 0)) -> (E, e)
 
-Equal-slack equality ``\theta = \Lambda(K\theta + h)`` of a critical region with affine law
-``x = K\theta + h``, written as ``E\theta = e`` with ``E = I - LK`` and ``e = Lh + l``
-(see [`equal_slack_map`](@ref)).
+Equal-slack equality of a critical region with law ``x = K p + h`` on the parameter
+``p = (\theta, \gamma)``: ``\theta = \Lambda(Kp + h, \gamma)``, i.e.
+```math
+(P_\beta - L K - L_\gamma P_\gamma)\, p = L h + l ,
+```
+with ``P_\beta = [I\ 0]`` and ``P_\gamma = [0\ I]`` selecting θ and γ in p.
 """
-function equal_slack_constraint(game::StaticGNEP, K::AbstractMatrix, h::AbstractVector)
-    L, l = equal_slack_map(game)
-    return Matrix(I, size(K, 2), size(K, 2)) - L * K, L * h + l
+function equal_slack_constraint(game::StaticGNEP, K::AbstractMatrix, h::AbstractVector;
+                                Bγ::AbstractMatrix=zeros(length(game.b_sh), 0))
+    L, Lγ, l = equal_slack_map(game; Bγ=Bγ)
+    nβ, nγ = size(L, 1), size(Lγ, 2)
+    @assert size(K, 2) == nβ + nγ "K must have (N-1)m + n_γ = $(nβ + nγ) columns, got $(size(K, 2))"
+    Pβ = [Matrix{Float64}(I, nβ, nβ) zeros(nβ, nγ)]
+    Pγ = [zeros(nγ, nβ) Matrix{Float64}(I, nγ, nγ)]
+    return Pβ - L * K - Lγ * Pγ, L * h + l
 end
 
-# Replace Eθ = e by an equivalent system with linearly independent rows (the equal-slack
-# equality is rank deficient whenever shared rows are slack or zero for some agent);
-# returns (nothing, nothing) if the system is inconsistent.
+# Numerical row reduction of Eθ = e to linearly independent rows (the equal-slack equality is
+# rank deficient whenever shared rows are slack or zero for some agent). The rank is decided
+# with a tolerance: this is a numerical step, not an exact certificate. Returns
+# (nothing, nothing) if the system is numerically inconsistent.
 function reduce_equality(E::AbstractMatrix, e::AbstractVector; tol::Float64=1e-9)
     isempty(e) && return E, e
     F = svd(E; full=true)
@@ -311,33 +331,37 @@ function reduce_equality(E::AbstractMatrix, e::AbstractVector; tol::Float64=1e-9
 end
 
 @doc raw"""
-    gne_regions(sol, game, mpavi) -> Vector{NamedTuple}
+    gne_regions(sol, game, mpavi; Bγ = zeros(m, 0), include_inconsistent = false) -> Vector{NamedTuple}
 
-For each critical region ``r`` of the parametric solution `sol` of the Nabetani mpAVI
-`mpavi`, return the data defining the equal-slack set
+For each critical region ``\mathcal P_r`` of the explicit solution `sol` of the Nabetani mpAVI
+`mpavi`, the equal-slack certified set
 ```math
-\mathcal E_r = \{\theta \mid G\theta \le g,\ A(K\theta+h) \le B\theta + b,\ \text{lb}\le\theta\le\text{ub},\ E\theta = e\},
+\mathcal E_r = \{p \mid G_r p \le g_r,\ A(K_r p+h_r) \le Bp + b,\ \text{lb}\le p\le\text{ub},\
+(P_\beta - L K_r - L_\gamma P_\gamma)p = L h_r + l\}.
 ```
-whose image under ``x = K\theta + h`` is a subset of the GNE set; the union over ``r`` is the
-whole GNE set within the parameter box: a pVI solution ``x = K_r\theta + h_r`` is a GNE if and only
-if its parameter is the equal-slack allocation ``\theta = \Lambda(x)`` (see [`equal_slack_map`](@ref)),
-which follows from Nabetani et al. (2011), Thms. 3.5–3.6. No active-set based region filtering is
-needed, which matters because ParametricDAQP returns only a linearly independent subset of the
-active constraints. Fields: `K, h` (law in the original θ coordinates, recomputed from the active
-set via the KKT system), `G, g` (region polytope in original θ coordinates), `E, e`
-(equal-slack equality, reduced to linearly independent rows), `AS`, `region` (index in
-`sol.CRs`). Regions whose equality is inconsistent (``\mathcal E_r = \varnothing``) are omitted.
+A pVI solution ``x = K_r p + h_r`` is a GNE if and only if ``p \in \mathcal E_r`` for some ``r``
+(Nabetani et al. 2011, Thms. 3.5–3.6, with the equal-slack allocation of
+[`equal_slack_map`](@ref)); no active-set based filtering is used. This is exact for the regions
+returned by ParametricDAQP; completeness additionally requires that the enumeration covers the
+parameter box (check `sol.status`) and that the allocations of the GNEs of interest lie in it.
+
+Fields: `K, h` (law in original coordinates, recomputed from the active set via the KKT system),
+`G, g` (region polytope in original coordinates), `E, e` (equality, numerically reduced to
+independent rows), `AS`, `region` (index in `sol.CRs`), `consistent` (false if the equality is
+numerically inconsistent, i.e. ``\mathcal E_r = \varnothing``; such regions are returned only with
+`include_inconsistent = true`).
 """
-function gne_regions(sol::ParametricDAQP.Solution, game::StaticGNEP, mpavi::mpAVI)
+function gne_regions(sol::ParametricDAQP.Solution, game::StaticGNEP, mpavi::mpAVI;
+                     Bγ::AbstractMatrix=zeros(length(game.b_sh), 0), include_inconsistent::Bool=false)
     n = size(mpavi.H, 1)
+    λmin = minimum(eigvals(Symmetric((mpavi.H + mpavi.H') / 2)))
+    λmin > 0 || @warn "[gne_regions] H is not positive definite (λ_min = $λmin): the pVI solution need not be unique and the equal-slack characterization is not guaranteed"
     regions = NamedTuple[]
     for (k, cr) in enumerate(sol.CRs)
-        # Region polytope Athᵀ θ̃ ≤ bth in normalized coordinates θ̃ = (θ - translation) .* scaling
+        # region polytope Athᵀ p̃ ≤ bth in normalized coordinates p̃ = (p - translation) .* scaling
         G = cr.Ath' * Diagonal(sol.scaling)
         g = cr.bth + G * sol.translation
-        # Exact law from the (full-row-rank) active set returned by ParametricDAQP.
-        # The stored law cr.z is in normalized coordinates and can be inaccurate on
-        # badly scaled problems, so it is not used.
+        # exact law from the (full-row-rank) active set; the stored law cr.z is not used
         AS = Int.(collect(cr.AS))
         Aa = mpavi.A[AS, :]
         nA = length(AS)
@@ -345,23 +369,28 @@ function gne_regions(sol::ParametricDAQP.Solution, game::StaticGNEP, mpavi::mpAV
         M = KKT \ [-mpavi.F; mpavi.B[AS, :]]
         c = KKT \ [-mpavi.f; mpavi.b[AS]]
         K, h = M[1:n, :], c[1:n]
-        E, e = reduce_equality(equal_slack_constraint(game, K, h)...)
-        isnothing(E) && continue                     # inconsistent equality: E_r = ∅
-        push!(regions, (K=K, h=h, G=G, g=g, E=E, e=e, AS=AS, region=k))
+        E, e = reduce_equality(equal_slack_constraint(game, K, h; Bγ=Bγ)...)
+        if isnothing(E)
+            include_inconsistent && push!(regions, (K=K, h=h, G=G, g=g, E=zeros(0, size(K, 2)), e=Float64[],
+                                                    AS=AS, region=k, consistent=false))
+            continue
+        end
+        push!(regions, (K=K, h=h, G=G, g=g, E=E, e=e, AS=AS, region=k, consistent=true))
     end
     return regions
 end
 
 @doc raw"""
-    evaluate_gne(regions, θ; tol=1e-8) -> Vector or nothing
+    evaluate_gne(regions, p; tol=1e-8) -> Vector or nothing
 
-Return ``x = K_r\theta + h_r`` if ``\theta \in \mathcal E_r`` (up to `tol`) for some region of
-`regions = gne_regions(sol, game, mpavi)`, i.e. if θ is the equal-slack parameter of a GNE;
-`nothing` otherwise. Unlike [`evaluatePWA`](@ref), which returns the pVI solution for any
-feasible θ, this only returns GNEs.
+Return ``x = K_r p + h_r`` if ``p \in \mathcal E_r`` (up to `tol`) for some region of
+`regions = gne_regions(...)`, i.e. if p is the equal-slack parameter of a GNE; `nothing`
+otherwise. Unlike [`evaluatePWA`](@ref), which returns the pVI solution for any feasible p,
+this only returns GNEs.
 """
 function evaluate_gne(regions::AbstractVector, θ::AbstractVector; tol::Float64=1e-8)
     for R in regions
+        get(R, :consistent, true) || continue
         if all(R.G * θ .<= R.g .+ tol) && (isempty(R.e) || norm(R.E * θ - R.e, Inf) <= tol)
             return R.K * θ + R.h
         end
@@ -421,38 +450,44 @@ function is_gne(game::StaticGNEP, x::AbstractVector; tol::Float64=1e-7)
     return (ok=ok, gap=maximum(gaps), gaps=gaps, infeas=infeas)
 end
 
-@doc raw"""
-    in_gne_map(regions, game, x; tol=1e-8) -> (found, region, θ)
 
-Completeness check for a given point: with ``θ = Λ(x)`` the equal-slack allocation of `x`
-([`equal_slack_allocation`](@ref)), check that ``θ ∈ \mathcal E_r`` for some region of
-`regions = gne_regions(sol, game, mpavi)` and that ``K_rθ + h_r = x``. Holds for every GNE `x`
-whose allocation lies inside the parameter box of the map.
+@doc raw"""
+    in_gne_map(regions, game, x; γ = Float64[], Bγ = zeros(m, 0), tol = 1e-8) -> (found, region, p)
+
+Numerical completeness check for a given point: with ``p = (\Lambda(x,\gamma), \gamma)``
+([`equal_slack_allocation`](@ref)), check that ``p \in \mathcal E_r`` for some region of
+`regions` and that ``K_r p + h_r = x``. Holds for every GNE `x` whose allocation lies inside the
+parameter box of the map, provided the enumeration covers that box.
 """
-function in_gne_map(regions::AbstractVector, game::StaticGNEP, x::AbstractVector; tol::Float64=1e-8)
-    θ = equal_slack_allocation(game, x)
+function in_gne_map(regions::AbstractVector, game::StaticGNEP, x::AbstractVector;
+                    γ::AbstractVector=Float64[], Bγ::AbstractMatrix=zeros(length(game.b_sh), 0), tol::Float64=1e-8)
+    p = [equal_slack_allocation(game, x; γ=γ, Bγ=Bγ); γ]
     for R in regions
-        if all(R.G * θ .<= R.g .+ tol) && (isempty(R.e) || norm(R.E * θ - R.e, Inf) <= tol) &&
-           norm(R.K * θ + R.h - x, Inf) <= tol * max(1.0, norm(x, Inf))
-            return (found=true, region=R.region, θ=θ)
+        get(R, :consistent, true) || continue
+        if all(R.G * p .<= R.g .+ tol) && (isempty(R.e) || norm(R.E * p - R.e, Inf) <= tol) &&
+           norm(R.K * p + R.h - x, Inf) <= tol * max(1.0, norm(x, Inf))
+            return (found=true, region=R.region, θ=p)
         end
     end
-    return (found=false, region=0, θ=θ)
+    return (found=false, region=0, θ=p)
 end
 
 @doc raw"""
-    check_gne_map(sol, game, mpavi; tol=1e-7) -> (ok, regions)
+    check_gne_map(sol, game, mpavi; Bγ = zeros(m, 0), game_at = γ -> game, tol = 1e-7) -> (ok, regions)
 
-Soundness check of a computed map: for every region with a consistent equal-slack equality,
-sample ``\mathcal E_r`` at the optima of the linear programs ``\min \pm\theta_k`` over
-``\mathcal E_r`` (its extreme points along the coordinate directions) and at their mean, and
-certify every ``x = K_r\theta + h_r`` with [`is_gne`](@ref). Returns `ok` and, per region, the
-number of certified points, the largest best-response gap, and the dimension of the sampled
-GNE image (`0` = a single point).
+Numerical soundness check of a computed map (a verification aid, not part of the construction
+of ``\mathcal E_r``): for every region with a consistent equal-slack equality, take the optima of
+the linear programs ``\min \pm p_k`` over ``\mathcal E_r`` and their mean, and certify every
+``x = K_r p + h_r`` with [`is_gne`](@ref) on `game_at(γ)` (the game at the leader value contained
+in p). Returns `ok` and, per region, the number of certified points, the largest best-response
+gap and the dimension of the sampled GNE image (`0` = a single point).
 """
-function check_gne_map(sol::ParametricDAQP.Solution, game::StaticGNEP, mpavi::mpAVI; tol::Float64=1e-7)
+function check_gne_map(sol::ParametricDAQP.Solution, game::StaticGNEP, mpavi::mpAVI;
+                       Bγ::AbstractMatrix=zeros(length(game.b_sh), 0), game_at::Function=γ -> game,
+                       tol::Float64=1e-7)
+    nγ = size(Bγ, 2)
     results = NamedTuple[]
-    for R in gne_regions(sol, game, mpavi)
+    for R in gne_regions(sol, game, mpavi; Bγ=Bγ)
         nθ = size(R.K, 2)
         pts = Vector{Vector{Float64}}()
         for k in 1:nθ, sgn in (1.0, -1.0)
@@ -466,46 +501,41 @@ function check_gne_map(sol::ParametricDAQP.Solution, game::StaticGNEP, mpavi::mp
             optimize!(model)
             is_solved_and_feasible(model; allow_almost=true) && push!(pts, value.(θ))
         end
-        isempty(pts) && continue                                    # E_r = ∅
+        isempty(pts) && continue
         push!(pts, sum(pts) / length(pts))
-        xs = [R.K * θ + R.h for θ in pts]
-        certs = [is_gne(game, x; tol=tol) for x in xs]
-        X = reduce(hcat, xs)
+        certs = [is_gne(game_at(p[end-nγ+1:end]), R.K * p + R.h; tol=tol) for p in pts]
+        X = reduce(hcat, [R.K * p + R.h for p in pts])
         dim = rank(X .- X[:, 1]; atol=1e-7)
-        push!(results, (region=R.region, npoints=length(xs), certified=count(c -> c.ok, certs),
+        push!(results, (region=R.region, npoints=length(pts), certified=count(c -> c.ok, certs),
                         gap=maximum(c -> c.gap, certs), dim=dim))
     end
     return (ok=all(r -> r.certified == r.npoints, results), regions=results)
 end
 
-# Interior-point solutions are only accurate to O(1e-6) in θ. Refine the regional optimum
-# on the affine hull of the numerically active constraints of E_r: for a quadratic objective
-# by solving the equality-constrained QP exactly (Hessian `P`, gradient `p`), otherwise by
-# projecting onto that affine hull. The refinement is kept only if it is feasible and does
-# not increase the objective.
-function polish_regional_solution(θ::AbstractVector, R, mpavi::mpAVI, ϕ::Function;
-                                  P=nothing, p=nothing, act_tol::Float64=1e-6)
+# Interior-point solutions are only accurate to O(1e-6) in p. Refine the regional optimum on
+# the affine hull of the numerically active constraints of E_r: for a quadratic objective by
+# solving the equality-constrained QP exactly (Hessian `P`, gradient `q`), otherwise by
+# projecting onto that affine hull. The refinement is kept only if it is feasible and does not
+# increase the objective `ϕp(p)`.
+function polish_regional_solution(θ::AbstractVector, R, mpavi::mpAVI, ϕp::Function, Ain, bin;
+                                  P=nothing, q=nothing, act_tol::Float64=1e-6)
     nθ = length(θ)
-    Ain = [R.G; mpavi.A * R.K - mpavi.B; Matrix(I, nθ, nθ); -Matrix(I, nθ, nθ)]
-    bin = [R.g; mpavi.b - mpavi.A * R.h; mpavi.ub; -mpavi.lb]
     act = findall(bin - Ain * θ .<= act_tol)
     Aeq = [R.E; Ain[act, :]]
     beq = [R.e; bin[act]]
-    # rows that are zero up to round-off (e.g. allocation rows that are identically active on
-    # the region) carry no information and would spoil the rank decisions below
+    # rows that are zero up to round-off carry no information and would spoil rank decisions
     keep = [norm(Aeq[k, :], Inf) > 1e-10 for k in 1:size(Aeq, 1)]
     Aeq, beq = Aeq[keep, :], beq[keep]
     if isnothing(P)
         isempty(beq) && return θ
         θs = θ - pinv(Aeq) * (Aeq * θ - beq)
     else
-        # Null-space solve of min ½θᵀPθ + pᵀθ s.t. Aeq θ = beq (handles redundant rows)
         θ0 = isempty(beq) ? θ : θ - pinv(Aeq) * (Aeq * θ - beq)
         Z = isempty(beq) ? Matrix(I, nθ, nθ) : nullspace(Aeq)
-        θs = size(Z, 2) == 0 ? θ0 : θ0 - Z * (pinv(Z' * P * Z) * (Z' * (P * θ0 + p)))
+        θs = size(Z, 2) == 0 ? θ0 : θ0 - Z * (pinv(Z' * P * Z) * (Z' * (P * θ0 + q)))
     end
     feasible = all(Ain * θs .<= bin .+ 1e-9) && (isempty(R.e) || norm(R.E * θs - R.e, Inf) <= 1e-9)
-    return feasible && ϕ(R.K * θs + R.h) <= ϕ(R.K * θ + R.h) + 1e-12 ? θs : θ
+    return feasible && ϕp(θs) <= ϕp(θ) + 1e-12 ? θs : θ
 end
 
 # Hessian and gradient of a quadratic JuMP objective in the variables `θ`
@@ -528,16 +558,41 @@ function quadratic_coefficients(obj, θ::AbstractVector)
     return P, p
 end
 
-@doc raw"""
-    select_optimal_gne(sol, game, mpavi, ϕ, is_quadratic, optimizer=Clarabel.Optimizer; verify=false)
+# Classification of a regional solve. Numerical failures are never reported as infeasibility.
+function regional_status(model)
+    st = termination_status(model)
+    st in (OPTIMAL, LOCALLY_SOLVED) && primal_status(model) == FEASIBLE_POINT && return :solved
+    st in (ALMOST_OPTIMAL, ALMOST_LOCALLY_SOLVED) && return :inexact
+    st in (INFEASIBLE, LOCALLY_INFEASIBLE) && return :infeasible
+    st == ALMOST_INFEASIBLE && return :inexact_infeasible
+    return :failed
+end
 
-Algorithm 1 (optimal GNE selection): for every critical region solve
+@doc raw"""
+    select_optimal_gne(sol, game, mpavi, ϕ, is_quadratic, optimizer=Clarabel.Optimizer;
+                       verify=false, assume_convex=false, Bγ=zeros(m,0), Γ=nothing, game_at=γ->game)
+
+Algorithm 1 (optimal GNE selection). For every critical region with a consistent equal-slack
+equality solve
 ```math
-\min_\theta\ \phi(K_r\theta + h_r) \quad \text{s.t.}\ \theta \in \mathcal E_r
+\min_{p=(\theta,\gamma)}\ \phi(K_r p + h_r, \gamma) \quad \text{s.t.}\ p \in \mathcal E_r,\ \gamma\in\Gamma
 ```
-(see [`gne_regions`](@ref)), skip regions with empty ``\mathcal E_r``, and return the best
-regional solution. `θ_star` is returned in the original parameter coordinates. With
-`verify=true` the selected point is certified with [`is_gne`](@ref).
+(see [`gne_regions`](@ref)), and keep the best regional solution. Without a leader, `ϕ(x)` takes
+the joint action only; with a leader (see `select_optimal_gne(sol, lp::LeaderParametrizedGNEP, …)`)
+it is called as `ϕ(x, γ)`. Γ is the γ-box of the mpAVI, optionally intersected with the polytope
+`Γ = (A = Aγ, b = bγ)`.
+
+Statuses are kept separate:
+- `map_status`: ParametricDAQP status of the explicit map (`:Solved` = full enumeration of the box);
+- `region_status[r]`: `:empty_inconsistent` (equality inconsistent), `:infeasible` (the solver
+  proved ``\mathcal E_r\cap\Gamma = \varnothing``), `:solved`, `:inexact` (almost optimal; kept as a
+  candidate), `:inexact_infeasible` or `:failed` (numerical failure, never read as infeasibility);
+- `status`: `:optimal` only if the map is complete, no regional solve failed or was inexact, and
+  ϕ is convex on every ``\mathcal E_r`` — verified numerically for quadratic ϕ (reduced Hessian on
+  the null space of each equality is positive semidefinite) or assumed by the caller with
+  `assume_convex = true`; `:local` if convexity is neither verified nor assumed; `:partial`
+  otherwise. An error is raised only if no regional problem was solved.
+With `verify = true` the selected point is certified with [`is_gne`](@ref).
 """
 function select_optimal_gne(
     sol::ParametricDAQP.Solution,
@@ -546,19 +601,33 @@ function select_optimal_gne(
     ϕ::Function,
     is_quadratic::Bool,
     optimizer = Clarabel.Optimizer;
-    verify::Bool = false
+    verify::Bool = false,
+    assume_convex::Bool = false,
+    Bγ::AbstractMatrix = zeros(length(game.b_sh), 0),
+    Γ = nothing,
+    game_at::Function = γ -> game,
+    leader_objective::Bool = false
 )::OptimalGNEResult
     if !is_quadratic && optimizer == Clarabel.Optimizer
         optimizer = Ipopt.Optimizer
     end
+    nγ = size(Bγ, 2)
+    ϕxγ = leader_objective ? ϕ : (x, γ) -> ϕ(x)
     candidates = []
-    for R in gne_regions(sol, game, mpavi)
+    region_status = Dict{Int,Symbol}()
+    convex_verified = true
+    for R in gne_regions(sol, game, mpavi; Bγ=Bγ, include_inconsistent=true)
+        if !R.consistent
+            region_status[R.region] = :empty_inconsistent
+            continue
+        end
         n_θ = size(R.K, 2)
         n_u = size(R.K, 1)
+        γof(p) = p[n_θ-nγ+1:n_θ]
         model = Model(optimizer)
         set_silent(model)
         if optimizer == Clarabel.Optimizer
-            # The equal-slack sets are typically lower dimensional: solve to high accuracy
+            # the certified sets are typically lower dimensional: solve to high accuracy
             for att in ("tol_gap_abs", "tol_gap_rel", "tol_feas")
                 set_attribute(model, att, 1e-10)
             end
@@ -566,35 +635,51 @@ function select_optimal_gne(
         @variable(model, mpavi.lb[i] <= θ[i=1:n_θ] <= mpavi.ub[i])
         @constraint(model, R.G * θ .<= R.g)
         @constraint(model, mpavi.A * (R.K * θ .+ R.h) .<= mpavi.B * θ .+ mpavi.b)
-        @constraint(model, R.E * θ .== R.e)
+        isempty(R.e) || @constraint(model, R.E * θ .== R.e)
+        isnothing(Γ) || @constraint(model, Γ.A * θ[n_θ-nγ+1:n_θ] .<= Γ.b)
         if is_quadratic
-            @objective(model, Min, ϕ(R.K * θ .+ R.h))
+            @objective(model, Min, ϕxγ(R.K * θ .+ R.h, θ[n_θ-nγ+1:n_θ]))
         else
-            @variable(model, y[1:n_u])
-            @constraint(model, y .== R.K * θ .+ R.h)
-            @operator(model, op_ϕ, n_u, (ys...) -> ϕ(collect(ys)))
+            @variable(model, y[1:n_u + nγ])
+            @constraint(model, y[1:n_u] .== R.K * θ .+ R.h)
+            @constraint(model, y[n_u+1:end] .== θ[n_θ-nγ+1:n_θ])
+            @operator(model, op_ϕ, n_u + nγ, (ys...) -> ϕxγ(collect(ys[1:n_u]), collect(ys[n_u+1:end])))
             @objective(model, Min, op_ϕ(y...))
         end
         optimize!(model)
-        if is_solved_and_feasible(model)
-            if is_quadratic
-                P, p = quadratic_coefficients(objective_function(model), θ)
-                θ_opt = polish_regional_solution(value.(θ), R, mpavi, ϕ; P=P, p=p)
-            else
-                θ_opt = polish_regional_solution(value.(θ), R, mpavi, ϕ)
-            end
-            u_opt = R.K * θ_opt + R.h
-            push!(candidates, (θ=θ_opt, u=u_opt, φ=ϕ(u_opt), region=R.region))
+        st = regional_status(model)
+        region_status[R.region] = st
+        st in (:solved, :inexact) || continue
+        ϕp(p) = ϕxγ(R.K * p + R.h, γof(p))
+        Ain = [R.G; mpavi.A * R.K - mpavi.B; Matrix(I, n_θ, n_θ); -Matrix(I, n_θ, n_θ)]
+        bin = [R.g; mpavi.b - mpavi.A * R.h; mpavi.ub; -mpavi.lb]
+        if !isnothing(Γ)
+            Ain = [Ain; [zeros(size(Γ.A, 1), n_θ - nγ) Γ.A]]
+            bin = [bin; Γ.b]
         end
-        # Infeasible regional problems (E_r = ∅) are the normal case and are skipped
+        if is_quadratic
+            P, q = quadratic_coefficients(objective_function(model), θ)
+            Z = isempty(R.e) ? Matrix(I, n_θ, n_θ) : nullspace(R.E)
+            convex_verified &= size(Z, 2) == 0 || minimum(eigvals(Symmetric(Z' * P * Z))) >= -1e-9
+            θ_opt = polish_regional_solution(value.(θ), R, mpavi, ϕp, Ain, bin; P=P, q=q)
+        else
+            convex_verified = false
+            θ_opt = polish_regional_solution(value.(θ), R, mpavi, ϕp, Ain, bin)
+        end
+        u_opt = R.K * θ_opt + R.h
+        push!(candidates, (θ=θ_opt, u=u_opt, γ=γof(θ_opt), φ=ϕp(θ_opt), region=R.region, status=st))
     end
-    isempty(candidates) && error("[select_optimal_gne] No region with a nonempty equal-slack set: no GNE in the parameter box.")
+    isempty(candidates) && error("[select_optimal_gne] no regional problem was solved; region statuses: $(region_status)")
     best = candidates[argmin([c.φ for c in candidates])]
+    map_status = sol.status
+    numerically_clean = all(st -> st in (:solved, :infeasible, :empty_inconsistent), values(region_status))
+    status = !(map_status == :Solved && numerically_clean) ? :partial :
+             (convex_verified || assume_convex) ? :optimal : :local
     if verify
-        cert = is_gne(game, best.u)
+        cert = is_gne(game_at(best.γ), best.u)
         cert.ok || @warn "[select_optimal_gne] selected point failed the GNE certificate" cert.gap cert.infeas
     end
-    return OptimalGNEResult(best.θ, best.u, best.φ, best.region, candidates)
+    return OptimalGNEResult(best.θ, best.u, best.φ, best.region, candidates, best.γ, status, map_status, region_status)
 end
 
 ####### END Helper functions for optimal GNE selection ##########
