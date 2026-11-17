@@ -279,6 +279,39 @@ slacks(g, θ, x) = (offs = cumsum([0; g.n]); xi = [x[offs[i]+1:offs[i+1]] for i 
         end
         @test nseg == 2
         @test r.convexity == :nonconvex && r.status == :unverified   # the middle region is genuinely nonconvex
+        # a solver reporting OPTIMAL at θ = 0, outside every E_r: no infeasible candidate may be selected
+        MOIU = JuMP.MOI.Utilities
+        lying() = (m = MOIU.MockOptimizer(MOIU.UniversalFallback(MOIU.Model{Float64}()));
+                   MOIU.set_mock_optimize!(m, mm -> MOIU.mock_optimize!(mm, JuMP.MOI.OPTIMAL, (JuMP.MOI.FEASIBLE_POINT, [0.0]))); m)
+        M = mapof(g; θub=[5.0], θlb=[-5.0])
+        r = DyNECT.select_optimal_gne(M.sol, g, M.mp, x -> sum(abs2, x), true, lying)
+        R = Dict(R.region => R for R in DyNECT.gne_regions(M.sol, g, M.mp))
+        @test all(DyNECT.regional_residual(c.θ, R[c.region], R[c.region].Ain, R[c.region].bin) <= 1e-6 for c in r.all_candidates)
+        @test DyNECT.is_gne(g, r.u_star).ok && r.status == :partial
+        @test :infeasible_candidate in values(r.region_status) && :inexact in values(r.region_status)
+    end
+
+    @testset "I. stored ParametricDAQP v0.6.1 law vs independent VI solution" begin
+        # region with a multiplier constant in θ: normalize_model sets its factor to 0, so the stored law drops
+        # that constraint; the KKT law of gne_regions must solve the VI, x = proj_Y(x - (Hx + Fθ + f))
+        Q = [[[2.0 0.5; 0.5 1.5], reshape([0.4, -0.3], 2, 1)], [[0.2 0.6], fill(2.0, 1, 1)]]
+        g0 = StaticGNEP(Q, [[-1.0, -2.0], [-1.5]], [-Matrix(1.0I, 2, 2), fill(1.0, 1, 1)], [[0.0, 0.0], [2.0]], [[1.0 1.0], fill(1.0, 1, 1)], [1.0])
+        g = DyNECT.fix_leader(DyNECT.LeaderParametrizedGNEP(g0, reshape([1.0, 0.5, -0.8], 3, 1), fill(2.0, 1, 1)), [0.75])
+        M = mapof(g; θub=[3.0], θlb=[-2.0])
+        function vi_res(θ, x)
+            md = JuMP.Model(DyNECT.Clarabel.Optimizer); JuMP.set_silent(md); JuMP.@variable(md, y[1:3])
+            JuMP.@constraint(md, M.mp.A * y .<= M.mp.B * θ + M.mp.b)
+            JuMP.@objective(md, Min, sum((y - x + M.mp.H * x + M.mp.F * θ + M.mp.f) .^ 2)); JuMP.optimize!(md)
+            norm(JuMP.value.(y) - x, Inf)
+        end
+        res_kkt, res_stored = 0.0, 0.0
+        for R in DyNECT.gne_regions(M.sol, g, M.mp; include_inconsistent=true), θ in ([t] for t in range(-2, 3; length=101))
+            all(R.G * θ .<= R.g .- 1e-6) || continue
+            res_kkt = max(res_kkt, vi_res(θ, R.K * θ + R.h))
+            res_stored = max(res_stored, vi_res(θ, DyNECT.evaluatePWA(M.sol, θ)))
+        end
+        @test res_kkt < 1e-6
+        @test_broken res_stored < 1e-6   # unexpected pass: the dependency is fixed and cr.z can be used again
     end
 end
 

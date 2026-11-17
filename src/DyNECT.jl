@@ -10,7 +10,7 @@ using Zygote
 
 include("types.jl")
 include("utils.jl")
-include("leader_param.jl")   # leader-parametrized (θ, γ) Nabetani parametrization
+include("leader_param.jl")
 include("inf_hor_tools.jl")
 include("interfaces.jl")
 include("solvers.jl")

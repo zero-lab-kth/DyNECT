@@ -521,17 +521,8 @@ end #
 """
     LeaderParametrizedGNEP(gnep, S, Bγ)
 
-Family of static GNEPs indexed by a leader variable `γ ∈ ℝ^{n_γ}`. Player `i` solves
-
-    min_{x_i} ½ x_iᵀ Q_ii x_i + x_iᵀ (Σ_{j≠i} Q_ij x_j + q_i + S_i γ)
-    s.t.      A_loc,i x_i ≤ b_loc,i,   Σ_j A_sh,j x_j ≤ b_sh + Bγ γ
-
-- `gnep::StaticGNEP`: the γ-independent data (`q` and `b_sh` are the values at `γ = 0`).
-- `S`: stacked `n_total × n_γ` matrix `[S_1; …; S_N]` (rows ordered like `x = [x_1; …; x_N]`).
-- `Bγ`: `m_sh × n_γ` matrix multiplying `γ` in the shared right-hand side.
-
-Solve with `CommonSolve.solve(lp, NabetaniParametrizationSolver; θub, θlb, γub, γlb)`; the
-returned PWA solution is a function of `p = [θ; γ]`.
+GNEP family in a leader variable γ: player i's linear cost term is `q_i + S_i γ` and the shared
+constraints are `Σ_j A_sh,j x_j ≤ b_sh + Bγ γ` (`gnep` holds the data at γ = 0, `S = [S_1; …; S_N]`).
 """
 struct LeaderParametrizedGNEP
     gnep::StaticGNEP
@@ -541,9 +532,7 @@ struct LeaderParametrizedGNEP
 
     function LeaderParametrizedGNEP(gnep::StaticGNEP, S::AbstractMatrix, Bγ::AbstractMatrix)
         n_γ = size(S, 2)
-        @assert size(S, 1) == sum(gnep.n) "S must have sum(n) = $(sum(gnep.n)) rows, got $(size(S, 1))"
-        @assert size(Bγ, 1) == length(gnep.b_sh) "Bγ must have m_sh = $(length(gnep.b_sh)) rows, got $(size(Bγ, 1))"
-        @assert size(Bγ, 2) == n_γ "S and Bγ must have the same number of columns (n_γ), got $(n_γ) and $(size(Bγ, 2))"
+        @assert size(S, 1) == sum(gnep.n) && size(Bγ) == (length(gnep.b_sh), n_γ) "S must be sum(n) × n_γ and Bγ m_sh × n_γ"
         return new(gnep, Matrix{Float64}(S), Matrix{Float64}(Bγ), n_γ)
     end
 end
@@ -753,17 +742,17 @@ end
 
 #added optimal GNE selection #usage
 struct OptimalGNEResult
-    θ_star::Vector{Float64} #Optimal parameter value (p = [θ; γ] for leader-parametrized games)
+    θ_star::Vector{Float64} #Optimal parameter value
     u_star::Vector{Float64} #Optimal equilibrium (GNE)  
     φ_star::Float64         #Performance metric value
     region_id::Int          #Which critical region contained optimum
     all_candidates::Vector  #All regional candidates for analysis
-    γ_star::Vector{Float64} #Optimal leader parameter (empty without leader)
-    status::Symbol          #:optimal (over the represented GNE set), :unverified or :partial (see select_optimal_gne)
-    map_status::Symbol      #ParametricDAQP status of the explicit map
-    region_status::Dict{Int,Symbol} #per critical region: regional problem status
-    convexity::Symbol       #:verified, :assumed, :nonconvex or :unknown
-    box_boundary::Bool      #selected allocation on the boundary of the parameter box
+    γ_star::Vector{Float64}
+    status::Symbol          #see select_optimal_gne
+    map_status::Symbol
+    region_status::Dict{Int,Symbol}
+    convexity::Symbol
+    box_boundary::Bool
 end
 OptimalGNEResult(θ, u, φ, r, c) = OptimalGNEResult(θ, u, φ, r, c, Float64[], :unknown, :unknown, Dict{Int,Symbol}(), :unknown, false)
 
