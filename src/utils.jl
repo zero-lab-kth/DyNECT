@@ -265,7 +265,7 @@ function select_optimal_gne(
             @objective(model, Min, op_ϕ(y...))
         end
         
-        # x(θ) is a GNE iff θ is the equal-slack allocation of x (Nabetani et al. 2011, Thms 3.5-3.6); assumes H + Hᵀ ≻ 0
+        # GNEs are exactly the pVI solutions x(θ) with θ = Λ(x(θ)), the equal-slack allocation (Nabetani et al. 2011, Thms 3.5-3.6); assumes H + Hᵀ ≻ 0
         @constraint(model, θ ./ sol.scaling .+ sol.translation .==
             vcat((game.A_sh[i] * (M_k * θ .+ d_k)[sum(game.n[1:i-1])+1:sum(game.n[1:i])] for i in 1:game.N-1)...) .+
             repeat((game.b_sh .- hcat(game.A_sh...) * (M_k * θ .+ d_k)) ./ game.N, game.N - 1))
