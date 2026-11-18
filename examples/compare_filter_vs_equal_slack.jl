@@ -1,13 +1,7 @@
-# Old pipeline (active-set filter `filter_gne_crs!` + regional selection) vs Algorithm 1
-# (equal-slack sets E_r, no filter) on games where the filter is known to work (Rosen, basic 2-D
-# example) and on a degenerate Rosen variant whose shared row is zero for one agent.
-# Every selected point is certified independently with `DyNECT.is_gne`.
-# Run: julia --project=. examples/compare_filter_vs_equal_slack.jl
+# Active-set filter vs equal-slack selection
 
 using DyNECT, CommonSolve, LinearAlgebra, ParametricDAQP, JuMP, Ipopt, Printf, Random
 
-# ---------------------------------------------------------------------------- helpers
-# Exact law and region polytope (original θ coordinates) of every critical region
 function region_data(sol, mp)
     n = size(mp.H, 1)
     map(enumerate(sol.CRs)) do (k, cr)
@@ -19,7 +13,6 @@ function region_data(sol, mp)
     end
 end
 
-# Solve min/max of c'x over {θ ∈ P_r (∩ Eθ = e)}; returns nothing if empty
 function lp(R, mp, c, sense; E=nothing, e=nothing)
     md = Model(Ipopt.Optimizer); set_silent(md); set_attribute(md, "tol", 1e-12)
     nθ = size(R.K, 2)
@@ -30,7 +23,6 @@ function lp(R, mp, c, sense; E=nothing, e=nothing)
     optimize!(md); is_solved_and_feasible(md; allow_almost=true) ? (c' * (R.K * value.(θ) + R.h), value.(θ)) : nothing
 end
 
-# Regional selection min φ(x) over the regions in `regs`, optionally with the equal-slack equality
 function select(regs, mp, ϕ!; eq::Dict=Dict())
     best = (φ=Inf, x=Float64[], r=0)
     for R in regs
@@ -48,7 +40,6 @@ function select(regs, mp, ϕ!; eq::Dict=Dict())
     best
 end
 
-# merged union of 1-D intervals
 function union_iv(iv)
     iv = sort(filter(!isnothing, iv)); out = Tuple{Float64,Float64}[]
     for (a, b) in iv
@@ -58,7 +49,6 @@ function union_iv(iv)
 end
 fmt(u) = join([@sprintf("[%.6f, %.6f]", a, b) for (a, b) in u], " ∪ ")
 
-# ---------------------------------------------------------------------------- comparison
 function compare(name, gnep, θub, θlb, objectives; image_dir=nothing, AS0=nothing)
     solver = CommonSolve.init(gnep, DyNECT.NabetaniParametrizationSolver; θub=θub, θlb=θlb, verbose=0, AS0=AS0)
     mp = solver.mpavi
@@ -67,7 +57,7 @@ function compare(name, gnep, θub, θlb, objectives; image_dir=nothing, AS0=noth
     filt = deepcopy(sol); DyNECT.filter_gne_crs!(filt, gnep)
     kept = Set(findall(cr -> any(c -> c.AS == cr.AS, filt.CRs), sol.CRs))
     EQ = Dict(R.region => (R.E, R.e) for R in DyNECT.gne_regions(sol, gnep, mp))
-    c = isnothing(image_dir) ? [1.0; zeros(size(mp.H, 1) - 1)] : image_dir    # image measured along x₁
+    c = isnothing(image_dir) ? [1.0; zeros(size(mp.H, 1) - 1)] : image_dir
 
     println("\n================ $name: $(length(sol.CRs)) critical regions ================")
     println(" r | active set       | filter | E_r                  | x₁-image of P_r          | x₁-image of E_r")
@@ -112,7 +102,6 @@ function compare(name, gnep, θub, θlb, objectives; image_dir=nothing, AS0=noth
     ok
 end
 
-# ---------------------------------------------------------------------------- games
 Jr(x) = (0.5x[1]^2 - x[1] * x[2], x[2]^2 + x[1] * x[2])
 SW!(md, x) = sum(Jr(x))
 MM!(md, x) = (@variable(md, s); J = Jr(x); @constraint(md, J[1] <= s); @constraint(md, J[2] <= s); s)
@@ -127,20 +116,16 @@ for γ in (-0.4, 0.0, 0.6)
     all_ok &= compare("Rosen, γ = $γ (K = $(1 + γ))", g, [5.0], [-5.0], [("SW", SW!), ("MM", MM!), TGT...])
 end
 
-# basic 2-D example: Jᵢ = |xᵢ - 10|², x ≥ 0, x₁ + x₂ ≤ 1, 4x₁ + x₂ ≤ 2
 g2 = DyNECT.StaticGNEP([[[1.;;], [0.;;]], [[0.;;], [1.;;]]], [[-10.], [-10.]], [[-1.;;], [-1.;;]], [[0.], [0.]],
                        [[1.; 4.0;;], [1.0; 1.0;;]], [1.; 2.])
 Random.seed!(2); T2 = [("target $k", (md, x) -> sum((x .- t) .^ 2)) for (k, t) in enumerate([rand(2) .* [0.5, 2.0] for _ in 1:20])]
 all_ok &= compare("basic 2-D example", g2, [5.0, 5.0], [-5.0, -5.0], T2)
 
-# degenerate Rosen variant: agent 3 (J₃ = ½x₃²) does not enter the shared row → zero row in A_sh[3]
 g3 = DyNECT.StaticGNEP([[[1.;;], [-1.;;], [0.;;]], [[1.;;], [2.;;], [0.;;]], [[0.;;], [0.;;], [1.;;]]], [[0.], [0.], [0.]],
                        [zeros(0, 1), zeros(0, 1), zeros(0, 1)], [Float64[], Float64[], Float64[]],
                        [[-1.;;], [-1.;;], [0.;;]], [-1.0])
 SW3!(md, x) = SW!(md, x) + 0.5x[3]^2
 MM3!(md, x) = MM!(md, x)
-# ParametricDAQP's own initial-active-set search errors out on this instance (compute_AS0 fallback
-# in v0.6.1), so the initial active set is given: at θ = (-0.6, -0.6) the rows of agents 1, 2 are active
 degenerate_ok = compare("Rosen + non-incident agent 3 (zero row)", g3, [4.4, 4.4], [-5.6, -5.6], [("SW", SW3!), ("MM", MM3!)]; AS0=[1, 2])
 
 println(all_ok ? "\nRosen and basic example: filter and Algorithm 1 agree." : "\nRosen and basic example: DIFFERENCES found (see above).")

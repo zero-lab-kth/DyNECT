@@ -41,14 +41,13 @@ gnep = DyNECT.StaticGNEP(Q, q, A_loc, b_loc, A_sh, b_sh)
 θlb = [-5.0; -5.0]
 solver = CommonSolve.init(gnep, DyNECT.NabetaniParametrizationSolver; θub=θub, θlb=θlb)
 sol = CommonSolve.solve!(solver)
-regions = DyNECT.gne_regions(sol, gnep, solver.mpavi)   # equal-slack sets E_r (Theorem 1), no filtering
+regions = DyNECT.gne_regions(sol, gnep, solver.mpavi)
 
 # ============================================================================
 # Check solution of GNE problem
 # ============================================================================
 
 # Solution expected: x₂ = min(1 - x₁, 2 - 4x₁) for x₁ ∈ [0, .5]
-# E_r can be lower dimensional: grid points are projected onto {Eθ = e} before the membership test
 x_sol = Vector{Vector{Float64}}()
 
 n_grid = 300
