@@ -189,7 +189,7 @@ end
     all_solutions_found = true
     for θ in θlb[1]:0.1:θub[1]
         x = DyNECT.evaluatePWA(sol, [θ])
-        if !isnothing(x)
+        if !isnothing(x) && abs(θ - (-x[1] + (sum(x) - 1) / 2)) < tol   # θ = Λ(x): x is a GNE
             all_solutions_found = all_solutions_found & (norm(x[1] - (1 - x[2])) < tol)
             all_solutions_found = all_solutions_found & (-1.0 <= x[2] <= 0.5)
         end
@@ -232,8 +232,10 @@ end
     tol = 1e-5
     all_solutions_found = true
     for test in 1:1000
-        θ = rand(2) .* (θub .- θlb) .+ θlb
+        x1 = rand() / 2; xg = [x1, min(1 - x1, 2 - 4x1)]                # a GNE ...
+        θ = [x1, 4x1] .+ ([1.0, 2.0] .- [sum(xg), 4x1 + xg[2]]) ./ 2   # ... and its equal-slack allocation Λ(x)
         x = DyNECT.evaluatePWA(sol, θ)
+        all_solutions_found &= !isnothing(x) && norm(x - xg) < tol
 
         if !isnothing(x)
             x2_sol = min(1-x[1], 2-4*x[1])
