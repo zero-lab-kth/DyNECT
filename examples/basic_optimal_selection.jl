@@ -51,11 +51,10 @@ sol = CommonSolve.solve(gnep, DyNECT.NabetaniParametrizationSolver, θub = θub,
 x_sol = Vector{Vector{Float64}}()
 
 n_grid = 1000
-θ1_grid = range(θlb[1], θub[1]; length=n_grid)
-θ2_grid = range(θlb[2], θub[2]; length=n_grid)
 
-for θ1 in θ1_grid, θ2 in θ2_grid
-    θ = [θ1, θ2]
+for x1 in range(0, 0.5; length=n_grid)
+    xg = [x1, min(1 - x1, 2 - 4x1)]
+    θ = [x1, 4x1] .+ ([1.0, 2.0] .- [sum(xg), 4x1 + xg[2]]) ./ 2   # equal-slack allocation of the GNE xg
     x = DyNECT.evaluatePWA(sol, θ)
     if !isnothing(x)
         push!(x_sol, collect(x))
@@ -65,7 +64,7 @@ end
 if !isempty(x_sol)
     x1 = [x[1] for x in x_sol]
     x2 = [x[2] for x in x_sol]
-    plt = scatter(x1, x2; xlabel="x₁", ylabel="x₂", title="x_sol over θ grid ($(n_grid)×$(n_grid))", label="")
+    plt = scatter(x1, x2; xlabel="x₁", ylabel="x₂", title="x_sol at the equal-slack allocations of $(n_grid) GNEs", label="")
     display(plt)
     savefig(plt, "examples/basic_optimal_selection_GNE_sol.png")
 end

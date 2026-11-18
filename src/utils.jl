@@ -238,8 +238,7 @@ function select_optimal_gne(
         b_k = CR_k.bth
         n_θ = size(A_k, 2)
         
-        # Affine map u = M_k θ + d_k from the KKT system of the active set (CR.z is not used:
-        # ParametricDAQP v0.6.1 drops active constraints whose multiplier is constant in θ)
+        # u = M_k θ + d_k from the KKT system of the active set (ParametricDAQP v0.6.1's CR.z can drop active constraints)
         Aa = mp.A[CR_k.AS, :]
         Kh = ([mp.H Aa'; Aa zeros(size(Aa, 1), size(Aa, 1))] \ [-mp.F -mp.f; mp.B[CR_k.AS, :] mp.b[CR_k.AS]])[1:size(mp.H, 1), :]
         M_k = Kh[:, 1:end-1] ./ sol.scaling'
