@@ -189,7 +189,7 @@ end
     all_solutions_found = true
     for θ in θlb[1]:0.1:θub[1]
         x = DyNECT.evaluatePWA(sol, [θ])
-        if !isnothing(x)
+        if !isnothing(x) && abs(θ - (-x[1] + (sum(x) - 1) / 2)) < tol   # θ = Λ(x): x is a GNE
             all_solutions_found = all_solutions_found & (norm(x[1] - (1 - x[2])) < tol)
             all_solutions_found = all_solutions_found & (-1.0 <= x[2] <= 0.5)
         end
@@ -198,6 +198,13 @@ end
 end
 
 
+
+@testset "OptimalGNESelection, constant-multiplier region (wrong stored law in ParametricDAQP v0.6.1)" begin
+    Q = [[[2.0 0.5; 0.5 1.5], reshape([0.4, -0.3], 2, 1)], [[0.2 0.6], fill(2.0, 1, 1)]]
+    g = DyNECT.StaticGNEP(Q, [[-0.25, -1.625], [-2.1]], [-Matrix(1.0I, 2, 2), fill(1.0, 1, 1)], [[0.0, 0.0], [2.0]], [[1.0 1.0], fill(1.0, 1, 1)], [2.5])
+    res = CommonSolve.solve(OptimalGNEP(g, x -> sum(abs2, x - [-0.664, 1.363, 0.717])), DyNECT.PWAConvexOptSolver; verbose = 0)
+    @test minimum(res.x[1:2]) >= -1e-6 && res.x[3] <= 2 + 1e-6 && sum(res.x) <= 2.5 + 1e-6
+end
 
 @testset "OptimalGNESelection" begin
     # Jᵢ = |xᵢ-10|²
@@ -232,8 +239,10 @@ end
     tol = 1e-5
     all_solutions_found = true
     for test in 1:1000
-        θ = rand(2) .* (θub .- θlb) .+ θlb
+        x1 = rand() / 2; xg = [x1, min(1 - x1, 2 - 4x1)]                # a GNE ...
+        θ = [x1, 4x1] .+ ([1.0, 2.0] .- [sum(xg), 4x1 + xg[2]]) ./ 2   # ... and its equal-slack allocation Λ(x)
         x = DyNECT.evaluatePWA(sol, θ)
+        all_solutions_found &= !isnothing(x) && norm(x - xg) < tol
 
         if !isnothing(x)
             x2_sol = min(1-x[1], 2-4*x[1])

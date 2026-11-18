@@ -47,7 +47,7 @@ x_sol = []
 
 for θ in test_interval
     x = DyNECT.evaluatePWA(sol, [θ])
-    if !isnothing(x)
+    if !isnothing(x) && abs(θ - (-x[1] + (sum(x) - 1) / 2)) < tol   # θ is the equal-slack allocation of x: x is a GNE
         push!(x_sol, x)
     end
 end

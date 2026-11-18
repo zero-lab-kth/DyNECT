@@ -715,8 +715,6 @@ function CommonSolve.solve!(solver::NabetaniParametrizationSolver)
 
     (sol, info) = ParametricDAQP.mpsolve(raw, Θ; opts = solver.options)
     
-    # Remove critical regions not associated to Nash equilibria
-    filter_gne_crs!(sol, solver.gnep)
     solver.status[] = :Solved
     return sol
 end
@@ -739,6 +737,7 @@ function CommonSolve.solve!(solver::PWAConvexOptSolver)
     GNEPsol = CommonSolve.solve(GNEP, NabetaniParametrizationSolver; verbose=solver.verbose)
     sol = select_optimal_gne(
         GNEPsol,
+        GNEP,
         solver.optGNEP.ϕ,
         solver.optGNEP.is_quadratic)
     solver.status[] = :Solved

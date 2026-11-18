@@ -215,32 +215,9 @@ end
 ####### END Type conversion functions #######
 
 ####### Helper functions for optimal GNE selection ##########
-function filter_gne_crs!(sol::ParametricDAQP.Solution, game::StaticGNEP)
-    N = game.N
-    m_sh = length(game.b_sh)
-    n_local = sum(size(game.A_loc[i], 1) for i in 1:N)
-    shared_start = n_local + 1
-    
-    filter!(sol.CRs) do cr
-        for i in 1:m_sh
-            # Collect all rows of the reformulated constraints associated to the same shared constraints
-            player_row_indices = [shared_start + (p - 1) * m_sh + (i - 1) for p in 1:N]
-            # Check if they are all active / inactive
-            active_status = [row_idx ∈ cr.AS for row_idx in player_row_indices]
-            all_active = all(active_status)
-            none_active = !any(active_status)
-            # If they are neither all active or inactive, the region does not correspond to a set of GNEs
-            if !(all_active || none_active)
-                return false
-            end
-        end
-        return true
-    end
-    return length(sol.CRs)
-end
-
 function select_optimal_gne(
     sol::ParametricDAQP.Solution,
+    game::StaticGNEP,
     ϕ::Function,
     is_quadratic::Bool,
     optimizer = Clarabel.Optimizer
@@ -250,6 +227,7 @@ function select_optimal_gne(
         optimizer = Ipopt.Optimizer
     end
     candidates = []
+    mp = NabetaniParametrization(game)
     
     for k in 1:length(sol.CRs)
         CR_k = sol.CRs[k]
@@ -260,10 +238,11 @@ function select_optimal_gne(
         b_k = CR_k.bth
         n_θ = size(A_k, 2)
         
-        # Extract affine map: u = M_k θ + d_k from CR.z' * [θ; 1]
-        # CR.z is (n_θ+1) × n_u, so:
-        M_k = CR_k.z[1:end-1, :]'  # n_u × n_θ
-        d_k = vec(CR_k.z[end, :])   # n_u
+        # u = M_k θ + d_k from the KKT system of the active set (ParametricDAQP v0.6.1's CR.z can drop active constraints)
+        Aa = mp.A[CR_k.AS, :]
+        Kh = ([mp.H Aa'; Aa zeros(size(Aa, 1), size(Aa, 1))] \ [-mp.F -mp.f; mp.B[CR_k.AS, :] mp.b[CR_k.AS]])[1:size(mp.H, 1), :]
+        M_k = Kh[:, 1:end-1] ./ sol.scaling'
+        d_k = Kh[:, end] + Kh[:, 1:end-1] * sol.translation
         n_u = size(M_k, 1)
 
         # Construct optimization problem
@@ -286,6 +265,10 @@ function select_optimal_gne(
             @objective(model, Min, op_ϕ(y...))
         end
         
+        # GNEs are exactly the pVI solutions x(θ) with θ = Λ(x(θ)), the equal-slack allocation (Nabetani et al. 2011, Thms 3.5-3.6); assumes H + Hᵀ ≻ 0
+        @constraint(model, θ ./ sol.scaling .+ sol.translation .==
+            vcat((game.A_sh[i] * (M_k * θ .+ d_k)[sum(game.n[1:i-1])+1:sum(game.n[1:i])] for i in 1:game.N-1)...) .+
+            repeat((game.b_sh .- hcat(game.A_sh...) * (M_k * θ .+ d_k)) ./ game.N, game.N - 1))
         optimize!(model)
         # Extract results only when optimal
         if termination_status(model) == OPTIMAL
