@@ -265,13 +265,13 @@ function select_optimal_gne(
             @objective(model, Min, op_ϕ(y...))
         end
         
-        # x(θ) is a GNE iff θ is the equal-slack allocation of x (Nabetani et al. 2011, Thms 3.5-3.6)
+        # x(θ) is a GNE iff θ is the equal-slack allocation of x (Nabetani et al. 2011, Thms 3.5-3.6); assumes H + Hᵀ ≻ 0
         @constraint(model, θ ./ sol.scaling .+ sol.translation .==
             vcat((game.A_sh[i] * (M_k * θ .+ d_k)[sum(game.n[1:i-1])+1:sum(game.n[1:i])] for i in 1:game.N-1)...) .+
             repeat((game.b_sh .- hcat(game.A_sh...) * (M_k * θ .+ d_k)) ./ game.N, game.N - 1))
         optimize!(model)
         # Extract results only when optimal
-        if termination_status(model) in (OPTIMAL, LOCALLY_SOLVED)
+        if termination_status(model) == OPTIMAL
             θ_opt = value.(θ)
             obj_opt = objective_value(model)
             push!(candidates, (θ=θ_opt, u=M_k * θ_opt + d_k, φ=obj_opt, region=k))
