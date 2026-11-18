@@ -685,7 +685,7 @@ struct OptimalGNEP
         result = ϕ(y_test)
         result isa Union{Number,AffExpr,QuadExpr} || throw(ErrorException("[OptimalGNEP constructor] ϕ must return a scalar"))
         is_quadratic = result isa Union{Number, AffExpr, QuadExpr}
-        minimum(eigvals(Symmetric(Zygote.hessian(ϕ, zeros(sum(GNEP.n)))))) < -1e-9 && @warn "[OptimalGNEP] ϕ is nonconvex: only local optima may be found"
+        minimum(eigvals(Symmetric(Zygote.hessian(ϕ, zeros(sum(GNEP.n)))))) < -1e-9 && @warn "[OptimalGNEP] ϕ is nonconvex: no optimality guarantee"
         
         return new(GNEP, ϕ, is_quadratic)
     end
