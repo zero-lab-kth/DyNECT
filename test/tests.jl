@@ -199,6 +199,14 @@ end
 
 
 
+@testset "OptimalGNESelection, constant-multiplier region" begin
+    # ParametricDAQP v0.6.1 stores a wrong law in a region whose multiplier is constant in θ
+    Q = [[[2.0 0.5; 0.5 1.5], reshape([0.4, -0.3], 2, 1)], [[0.2 0.6], fill(2.0, 1, 1)]]
+    g = DyNECT.StaticGNEP(Q, [[-0.25, -1.625], [-2.1]], [-Matrix(1.0I, 2, 2), fill(1.0, 1, 1)], [[0.0, 0.0], [2.0]], [[1.0 1.0], fill(1.0, 1, 1)], [2.5])
+    res = CommonSolve.solve(OptimalGNEP(g, x -> sum(abs2, x - [-0.664, 1.363, 0.717])), DyNECT.PWAConvexOptSolver; verbose = 0)
+    @test minimum(res.x[1:2]) >= -1e-6 && res.x[3] <= 2 + 1e-6 && sum(res.x) <= 2.5 + 1e-6
+end
+
 @testset "OptimalGNESelection" begin
     # Jᵢ = |xᵢ-10|²
     # x₁ + x₂ ≤ 1; 

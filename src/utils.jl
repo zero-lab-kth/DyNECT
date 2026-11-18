@@ -227,6 +227,7 @@ function select_optimal_gne(
         optimizer = Ipopt.Optimizer
     end
     candidates = []
+    mp = NabetaniParametrization(game)
     
     for k in 1:length(sol.CRs)
         CR_k = sol.CRs[k]
@@ -237,10 +238,12 @@ function select_optimal_gne(
         b_k = CR_k.bth
         n_θ = size(A_k, 2)
         
-        # Extract affine map: u = M_k θ + d_k from CR.z' * [θ; 1]
-        # CR.z is (n_θ+1) × n_u, so:
-        M_k = CR_k.z[1:end-1, :]'  # n_u × n_θ
-        d_k = vec(CR_k.z[end, :])   # n_u
+        # Affine map u = M_k θ + d_k from the KKT system of the active set (CR.z is not used:
+        # ParametricDAQP v0.6.1 drops active constraints whose multiplier is constant in θ)
+        Aa = mp.A[CR_k.AS, :]
+        Kh = ([mp.H Aa'; Aa zeros(size(Aa, 1), size(Aa, 1))] \ [-mp.F -mp.f; mp.B[CR_k.AS, :] mp.b[CR_k.AS]])[1:size(mp.H, 1), :]
+        M_k = Kh[:, 1:end-1] ./ sol.scaling'
+        d_k = Kh[:, end] + Kh[:, 1:end-1] * sol.translation
         n_u = size(M_k, 1)
 
         # Construct optimization problem
